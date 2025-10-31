@@ -1,0 +1,10 @@
+[package]
+name = "artcat"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bilge = "0.3"
+packbytes = { version="0.2", features = ['packbytes-derive'], default-features=false }
+futures-concurrency = { version = "7.6", default-features=false }
+tokio-serial = "^5.4"
