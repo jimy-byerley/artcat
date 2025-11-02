@@ -1,5 +1,5 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncRead, AsyncWrite};
-use tokio_serial::{SerialStream, SerialPortBuilder};
+use tokio_serial::{SerialPort, SerialPortBuilder, DataBits, Parity, StopBits};
 use packbytes::{FromBytes, ToBytes, ByteArray};
 use std::{
     task::{Poll, Waker},
@@ -30,12 +30,18 @@ pub enum Address {
     Fixed(u16, u16),
     Virtual(u32),
 }
-#[derive(Copy, Clone)]
-pub enum ArtcatError {
-    Bus(&'static str),
+pub enum Error {
+    Bus(std::io::Error),
     Slave(CommandError),
     Master(&'static str),
 }
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::Bus(error)
+    }
+}
+
+type ArtcatResult<T> = Result<Answer<T>, Error>;
 
 
 /// artcat master implementation
@@ -45,7 +51,7 @@ pub struct Master<B> {
     /// command answers currently waited for
     pending: BusyMutex<HashMap<Token, Pending>>,
 }
-/// hold data for receiving command's results
+/// internal struct holding data for receiving command's results
 struct Pending {
     /// initial command header, executed is set to MAX until actual answer received
     command: Command,
@@ -54,26 +60,34 @@ struct Pending {
     /// for waking up the async task waiting for the answer
     waker: Option<Waker>,
     /// result set after last reception
-    result: Option<Result<u8, ArtcatError>>,
+    result: Option<Result<u8, Error>>,
 }
 /// internal token type for pending commands
 type Token = u16;
 
 
+impl Master<Box<dyn SerialPort>> {
+    pub fn new<'a>(path: impl Into<Cow<'a, str>>, rate: u32, timeout: Duration) -> Result<Self, std::io::Error> {
+        Ok(Self {
+            bus: BusyMutex::from(tokio_serial::new(path, rate)
+                .timeout(Duration::from_millis(100))
+                .data_bits(DataBits::Eight)
+                .parity(Parity::Even)
+                .stop_bits(StopBits::Two)
+                .open()?),
+            pending: BusyMutex::from(HashMap::new()),
+        })
+    }
+}
 impl<B: AsyncRead + AsyncWrite + Unpin> Master<B> {
-//     pub fn new<'a>(path: impl Into<Cow<'a, str>>, rate: u32, timeout: Duration) -> Self {
-//         todo!()
-//     }
-//     pub fn from_filename(path: impl Into<Cow<'a, str>>, rate: u32, timeout: Duration) -> Self {
-//         td
-//     }
     pub async fn read_bytes<'d>(&self, address: Address, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
         let len = data.len().try_into().expect("data is longer than what u16 can address");
         self.command(Command::new(address, true, false, len), data).await
     }
     pub async fn write_bytes(&self, address: Address, data: &mut [u8]) -> ArtcatResult<()> {
         let len = data.len().try_into().expect("data is longer than what u16 can address");
-        self.command(Command::new(address, false, true, len), data).await .map(|_| ())
+        self.command(Command::new(address, false, true, len), data).await 
+            .map(|a| Answer {data: (), executed: a.executed})
     }
     pub async fn exchange_bytes<'d>(&self, address: Address, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
         let len = data.len().try_into().expect("data is longer than what u16 can address");
@@ -90,22 +104,22 @@ impl<B: AsyncRead + AsyncWrite + Unpin> Master<B> {
         let topic = Topic::new(self, command, unsafe{ transmute::<&mut [u8], &'static mut [u8]>(data) }).await?;
         topic.send().await?;
         let executed = topic.receive().await?;
-        ArtcatResult {
-            result: Ok(data),
+        Ok(Answer {
+            data: data,
             executed,
-        }
+        })
     }
     
-    pub async fn run(&self) {
+    pub async fn run(&self) -> Result<(), std::io::Error> {
         let mut header = <Command as FromBytes>::Bytes::zeroed();
         let mut receive = [0u8; MAX_COMMAND];
         loop {
             let (header, data) = {
                 let mut bus = self.bus.lock().await;
-                let size = bus.read(&mut header).await;
+                bus.read_exact(&mut header).await?;
                 let header = Command::from_be_bytes(header);
                 let data = &mut receive[.. usize::from(header.size)];
-                let size = bus.read(data).await;
+                bus.read_exact(data).await?;
                 (header, data)
             };
             
@@ -121,7 +135,7 @@ impl<B: AsyncRead + AsyncWrite + Unpin> Master<B> {
                     Some(Ok(header.executed))
                 }
                 else 
-                    {Some(Err(ArtcatError::Master("reponse header mismatch")))};
+                    {Some(Err(Error::Master("reponse header mismatch")))};
                 
                 if let Some(waker) = buffer.waker.take() {
                     waker.wake();
@@ -161,12 +175,14 @@ struct Topic<'m, B> {
     token: Token,
 }
 impl<'m, B: AsyncRead + AsyncWrite + Unpin> Topic<'m, B> {
-    async fn new(master: &'m Master<B>, command: Command, data: &'static mut [u8]) -> Result<Self, ArtcatError> {
+    async fn new(master: &'m Master<B>, command: Command, data: &'static mut [u8]) -> Result<Self, Error> {
         let token;
         {
             let mut pending = master.pending.lock().await;
             token = loop {
-                if let Some(token) = (0 ..= pending.len()) .filter(pending.contains).first()
+                if let Some(token) = (0 ..= u16::try_from(pending.len()).unwrap()) 
+                    .filter(|k| pending.contains_key(&k))
+                    .next()
                     {break token}
                 };
             let mut command = command;
@@ -180,17 +196,17 @@ impl<'m, B: AsyncRead + AsyncWrite + Unpin> Topic<'m, B> {
         }
         Ok(Self{master, token})
     }
-    async fn send(&self) -> Result<(), ArtcatError> {
+    async fn send(&self) -> Result<(), Error> {
         let mut pending = self.master.pending.lock().await;
         let buffer = pending.get_mut(&self.token).unwrap();
         {
             let mut bus = self.master.bus.lock().await;
-            bus.write(&buffer.command.to_be_bytes()).await;
-            bus.write(buffer.buffer).await;
+            bus.write(&buffer.command.to_be_bytes()).await?;
+            bus.write(buffer.buffer).await?;
         }
         Ok(())
     }
-    async fn receive(&self) -> Result<u8, ArtcatError> {
+    async fn receive(&self) -> Result<u8, Error> {
         poll_fn(|context| {
             if let Some(mut pending) = self.master.pending.try_lock() {
                 let buffer = pending.get_mut(&self.token).unwrap();
@@ -219,43 +235,27 @@ impl<B> Drop for Topic<'_, B> {
 }
 
 
-/** arcat command result
-    
-    basically contains a success/error flag with associated data, and the number of slaves who executed the command
-*/
-pub struct ArtcatResult<T> {
-    result: Result<T, ArtcatError>,
-    executed: u8,
+/// received data and number of slaves who executed the command
+pub struct Answer<T> {
+    pub data: T,
+    pub executed: u8,
 }
-impl<T> ArtcatResult<T> {
-    pub fn executed(&self) -> u8 {
-        self.executed
+impl<T> Answer<T> {
+    pub fn any(self) -> Result<T, Error> {
+        if self.executed == 0 
+            {return Err(Error::Master("no slave answered"))}
+        Ok(self.data)
     }
-    pub fn any(self) -> Result<T, ArtcatError> {
-        self.result
-    }
-    pub fn exact(self, executed: u8) -> Result<T, ArtcatError> {
+    pub fn exact(self, executed: u8) -> Result<T, Error> {
         if self.executed != executed {
             if self.executed == 0
-                {return Err(ArtcatError::Master("no slave answered"))}
+                {return Err(Error::Master("no slave answered"))}
             else
-                {return Err(ArtcatError::Master("incorrect number of answers"))}
+                {return Err(Error::Master("incorrect number of answers"))}
         }
-        self.result
+        Ok(self.data)
     }
-    pub fn once(self) -> Result<T, ArtcatError>  {
+    pub fn once(self) -> Result<T, Error>  {
         self.exact(1)
-    }
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> ArtcatResult<U> {
-        match self.result {
-            Ok(value) => ArtcatResult {
-                result: Ok(f(value)),
-                executed: self.executed,
-            },
-            Err(error) => ArtcatResult {
-                result: Err(self.result),
-                executed: self.executed,
-            }
-        }
     }
 }

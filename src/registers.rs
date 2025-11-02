@@ -1,8 +1,5 @@
 use core::marker::PhantomData;
-use bilge::prelude::*;
-use packbytes::{FromBytes, ToBytes, ByteArray};
-
-use crate::pack_bilge;
+use packbytes::{FromBytes, ToBytes};
 
 
 #[derive(PartialEq, Hash)]
@@ -17,19 +14,19 @@ impl<T> Register<T> {
 }
 
 /// slave fixed address
-pub const address: Register<u16> = Register::new(0x0);
+pub const ADDRESS: Register<u16> = Register::new(0x0);
 /// first communication error raise by slave, write to to 0 to reset
-pub const error: Register<CommandError> = Register::new(0x2);
+pub const ERROR: Register<CommandError> = Register::new(0x2);
 /// protocol version
-pub const version: Register<u8> = Register::new(0x3);
+pub const VERSION: Register<u8> = Register::new(0x3);
 //         /// error message, must be a UTF8 zero-terminated string
 //         pub const message: Register<[u8; 32]> = Register::new(0x4);
 /// slave standard informations
-pub const device: Register::<Device> = Register::new(0x20);
+pub const DEVICE: Register::<Device> = Register::new(0x20);
 /// slave clock value when reading
-pub const clock: Register::<u64> = Register::new(0x100);
+pub const CLOCK: Register::<u64> = Register::new(0x100);
 /// mapping between registers and virtual memory
-pub const mapping: Register::<MappingTable> = Register::new(0x200);
+pub const MAPPING: Register::<MappingTable> = Register::new(0x200);
 
 
 /// slave standard informations

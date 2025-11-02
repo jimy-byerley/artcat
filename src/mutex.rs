@@ -11,13 +11,16 @@ pub struct BusyMutex<T> {
     value: UnsafeCell<T>,
     locked: AtomicBool,
 }
-impl<T> BusyMutex<T> {
-    pub fn new(value: T) -> Self {
+impl<T> From<T> for BusyMutex<T> {
+    fn from(value: T) -> Self {
         Self {
             value: value.into(), 
             locked: AtomicBool::new(false),
         }
     }
+}
+impl<T> BusyMutex<T> {
+    /// acquire lock if free, otherwise return None
     pub fn try_lock(&self) -> Option<BusyMutexGuard<'_, T>> {
         BusyMutexGuard::try_new(self)
     }
