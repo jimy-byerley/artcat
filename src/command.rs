@@ -7,8 +7,10 @@ use crate::pack_bilge;
 pub const MAX_COMMAND: usize = 1024;
 
 /// memory bus command header
-#[derive(Copy, Clone, FromBytes, ToBytes, Debug)]
+#[derive(Copy, Clone, FromBytes, ToBytes, Debug, Default)]
 pub struct Command {
+    /// identifier of command
+    pub token: u16,
     /// type of memory access
     pub access: Access,
     /// counte the number of times this command has been executed by consecutive slaves
@@ -34,7 +36,7 @@ pub struct Access {
     pub fixed: bool,
     /// if set, the slave address is topological
     pub topological: bool,
-    _reserved: u4,
+    _reserved: u3,
     /// set to True for a command that could not be executed, the error code is instantly set in register `error`
     pub error: bool,
 }

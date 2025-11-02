@@ -5,13 +5,14 @@ use packbytes::{FromBytes, ToBytes, ByteArray};
 use crate::pack_bilge;
 
 
+#[derive(PartialEq, Hash)]
 pub struct Register<T> {
     pub address: u16,
     ty: PhantomData<T>,
 }
 impl<T> Register<T> {
-    pub const fn new(address:u16) -> Self {
-        Self{address, ty: PhantomData}
+    pub const fn new(_address: u16) -> Self {
+        Self{address: _address, ty: PhantomData}
     }
 }
 

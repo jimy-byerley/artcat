@@ -21,11 +21,21 @@ impl<T> BusyMutex<T> {
     pub fn try_lock(&self) -> Option<BusyMutexGuard<'_, T>> {
         BusyMutexGuard::try_new(self)
     }
+    /// busy polling future until lock is acquired
     pub async fn lock(&self) -> BusyMutexGuard<'_, T> {
         poll_fn(|_| match BusyMutexGuard::try_new(self) {
             Some(guard) => Poll::Ready(guard),
             None => Poll::Pending,
-            }).aait
+            }).await
+    }
+    /// busy wait until lock is acquired
+    pub fn blocking_lock(&self) -> BusyMutexGuard<'_, T> {
+        loop {
+            if let Some(pending) = BusyMutexGuard::try_new(self) 
+                {break pending}
+            // nothing else to do, leave resources to the kernel
+            std::thread::yield_now();
+        }
     }
 }
 
