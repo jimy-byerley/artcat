@@ -55,6 +55,7 @@ pub struct Mapping {
 pub enum CommandError {
     #[default]
     None = 0,
+    Unknown = 255,
     
     /// received command doesn't exist
     InvalidCommand = 1,

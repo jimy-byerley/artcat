@@ -32,6 +32,7 @@ impl<T> BusyMutex<T> {
             }).await
     }
     /// busy wait until lock is acquired
+    #[cfg(feature = "std")]
     pub fn blocking_lock(&self) -> BusyMutexGuard<'_, T> {
         loop {
             if let Some(pending) = BusyMutexGuard::try_new(self) 

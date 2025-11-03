@@ -1,11 +1,12 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncRead, AsyncWrite};
-use tokio_serial::{SerialPort, SerialPortBuilder, DataBits, Parity, StopBits};
+use tokio_serial::{SerialPort, DataBits, Parity, StopBits};
 use packbytes::{FromBytes, ToBytes, ByteArray};
 use std::{
     task::{Poll, Waker},
     future::poll_fn,
     time::Duration,
     borrow::Cow,
+    boxed::Box,
     collections::HashMap,
     mem::transmute,
     marker::Unpin,
@@ -70,7 +71,7 @@ impl Master<Box<dyn SerialPort>> {
     pub fn new<'a>(path: impl Into<Cow<'a, str>>, rate: u32, timeout: Duration) -> Result<Self, std::io::Error> {
         Ok(Self {
             bus: BusyMutex::from(tokio_serial::new(path, rate)
-                .timeout(Duration::from_millis(100))
+                .timeout(timeout)
                 .data_bits(DataBits::Eight)
                 .parity(Parity::Even)
                 .stop_bits(StopBits::Two)
@@ -100,7 +101,6 @@ impl<B: AsyncRead + AsyncWrite + Unpin> Master<B> {
     
     
     async fn command<'d>(&self, command: Command, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
-        // TODO unregister command from pending if this future is canceled
         let topic = Topic::new(self, command, unsafe{ transmute::<&mut [u8], &'static mut [u8]>(data) }).await?;
         topic.send().await?;
         let executed = topic.receive().await?;
@@ -125,17 +125,20 @@ impl<B: AsyncRead + AsyncWrite + Unpin> Master<B> {
             
             let mut pending = self.pending.lock().await;
             if let Some(buffer) = pending.get_mut(&header.token) {
-                buffer.result = 
-                    if buffer.command.token == header.token
+                if !(  buffer.command.token == header.token
                     && buffer.command.access == header.access
                     && buffer.command.address == header.address
-                    && buffer.command.size == header.size
+                    && buffer.command.size == header.size )
                 {
-                    buffer.buffer.copy_from_slice(data);
-                    Some(Ok(header.executed))
+                    buffer.result = Some(Err(Error::Master("reponse header mismatch")));
                 }
-                else 
-                    {Some(Err(Error::Master("reponse header mismatch")))};
+                else if header.access.error() {
+                    buffer.result = Some(Err(Error::Slave(CommandError::Unknown)));
+                }
+                else {
+                    buffer.buffer.copy_from_slice(data);
+                    buffer.result = Some(Ok(header.executed));
+                }
                 
                 if let Some(waker) = buffer.waker.take() {
                     waker.wake();
@@ -196,6 +199,7 @@ impl<'m, B: AsyncRead + AsyncWrite + Unpin> Topic<'m, B> {
         }
         Ok(Self{master, token})
     }
+    /// send the current content of the buffer
     async fn send(&self) -> Result<(), Error> {
         let mut pending = self.master.pending.lock().await;
         let buffer = pending.get_mut(&self.token).unwrap();
@@ -206,6 +210,7 @@ impl<'m, B: AsyncRead + AsyncWrite + Unpin> Topic<'m, B> {
         }
         Ok(())
     }
+    /// wait for answer to be ready in the current buffer
     async fn receive(&self) -> Result<u8, Error> {
         poll_fn(|context| {
             if let Some(mut pending) = self.master.pending.try_lock() {

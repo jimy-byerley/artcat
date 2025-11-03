@@ -7,5 +7,11 @@ edition = "2024"
 bilge = "0.3"
 packbytes = { version="0.2", features = ['packbytes-derive'], default-features=false }
 futures-concurrency = { version = "7.6", default-features=false }
-tokio-serial = "^5.4"
-tokio = { version="^1.48", features = ['io-util'] }
+tokio-serial = { version="^5.4", optional = true }
+tokio = { version="^1.48", features = ['io-util'], optional = true }
+embedded-io-async = { version = "^0.7", optional = true }
+
+[features]
+std = []
+master = ["std", "dep:tokio-serial", "dep:tokio"]
+slave = ["dep:embedded-io-async"]
