@@ -2,13 +2,13 @@ use core::marker::PhantomData;
 use packbytes::{FromBytes, ToBytes};
 
 
-#[derive(PartialEq, Hash)]
+#[derive(Copy, Clone, PartialEq, Hash)]
 pub struct Register<T> {
-    pub address: u16,
+    pub address: u32,
     ty: PhantomData<T>,
 }
 impl<T> Register<T> {
-    pub const fn new(_address: u16) -> Self {
+    pub const fn new(_address: u32) -> Self {
         Self{address: _address, ty: PhantomData}
     }
 }
@@ -30,7 +30,7 @@ pub const MAPPING: Register::<MappingTable> = Register::new(0x200);
 
 
 /// slave standard informations
-#[derive(Copy, Clone, FromBytes, ToBytes)]
+#[derive(Copy, Clone, FromBytes, ToBytes, Debug)]
 pub struct Device {
     /// model name, must be a UTF8 zero-terminated string
     model: [u8; 32],
@@ -39,19 +39,19 @@ pub struct Device {
     /// version of the slave's software, arbitrary format, must be a UTF8 zero-terminated string
     software_version: [u8; 32],
 }
-#[derive(Copy, Clone, FromBytes, ToBytes)]
+#[derive(Copy, Clone, FromBytes, ToBytes, Debug)]
 pub struct MappingTable {
     size: u8,
     map: [Mapping; 128],
 }
-#[derive(Copy, Clone, FromBytes, ToBytes)]
+#[derive(Copy, Clone, FromBytes, ToBytes, Debug)]
 pub struct Mapping {
     mapped_start: u32,
     slave_start: u16,
     size: u16,
 }
 #[repr(u8)]
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, Debug)]
 pub enum CommandError {
     #[default]
     None = 0,

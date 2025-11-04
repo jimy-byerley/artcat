@@ -48,7 +48,7 @@ pub struct BusyMutexGuard<'m, T> {
 }
 impl<'m, T> BusyMutexGuard<'m, T> {
     fn try_new(mutex: &'m BusyMutex<T>) -> Option<Self> {
-        if mutex.locked.swap(true, Acquire)
+        if mutex.locked.swap(true, Acquire) == false
             {Some(Self {mutex})}
         else 
             {None}

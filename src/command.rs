@@ -20,6 +20,14 @@ pub struct Command {
     /// number of bytes to read/write, following this header
     pub size: u16,
 }
+/// checksums for command
+#[derive(Copy, Clone, FromBytes, ToBytes, Debug, Default)]
+pub struct CheckSums {
+    /// checksum of header
+    pub header: u8,
+    /// checksum of data
+    pub data: u8,
+}
 
 /// type of memory access
 #[bitsize(8)]

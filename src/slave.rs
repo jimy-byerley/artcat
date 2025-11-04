@@ -1,4 +1,3 @@
-use core::cell::UnsafeCell;
 use packbytes::{FromBytes, ToBytes, ByteArray};
 use embedded_io_async::{Read, Write};
 
@@ -12,7 +11,7 @@ use crate::{
 
 
 struct Slave<'d, B, const MEM: usize> {
-    buffers: UnsafeCell<[[u8; MEM]; 3]>,
+    buffer: BusyMutex<[u8; MEM]>,
     control: BusyMutex<SlaveControl<B>>,
     receive: BusyMutex<[u8; MAX_COMMAND]>,
     send: BusyMutex<[u8; MAX_COMMAND]>,
@@ -41,39 +40,40 @@ impl<'d, B: Read + Write, const MEM: usize> Slave<'d, B, MEM> {
         let mut control = self.control.lock().await;
         let mut receive = self.receive.lock().await;
         let mut send = self.send.lock().await;
+        let mut header = <Command as FromBytes>::Bytes::zeroed();
         
         let mut address;
         loop {
             // read header
-            let size = control.bus.read(&mut receive[.. <Command as FromBytes>::Bytes::SIZE]).await;
-            let header = Command::from_be_bytes(&receive);
-            let local = SlaveRegister::from(header.address);
+            let size = control.bus.read_exact(&mut header).await;
+            let header = Command::from_be_bytes(header);
+            let local = SlaveLocal::from(header.address);
             
             // check command consistency
-            if header.size > MAX_COMMAND {
-                self.set(registers::error, registers::CommandError::InvalidAccess).await;
+            if usize::from(header.size) > MAX_COMMAND {
+                self.set(registers::ERROR, registers::CommandError::InvalidAccess).await;
                 continue;
             }
-            if header.access.slave_fixed() && header.access.slave_topological() {
-                self.set(registers::error, registers::CommandError::InvalidCommand).await;
+            if header.access.fixed() && header.access.topological() {
+                self.set(registers::ERROR, registers::CommandError::InvalidCommand).await;
                 continue;
             }
             
             // logic for topologial addresses
-            if header.access.slave_topological() {
+            if header.access.topological() {
                 local.set_slave(local.slave().wrapping_sub(1));
                 header.address = local.into();
             }
             // direct access to slave buffer
-            if header.access.slave_fixed() && local.slave() == control.address
-            || header.access.slave_topological() && local.slave() == 0 
+            if header.access.fixed() && local.slave() == control.address
+            || header.access.topological() && local.slave() == 0 
             {
                 // exchange requested chunk of data
                 // mark the command executed
                 header.executed += 1;
                 control.bus.write(&header.to_be_bytes()).await;
                 
-                let size = control.bus.read(&mut receive[.. header.size]).await;
+                let size = control.bus.read_exact(&mut receive[.. header.size]).await;
                 assert_eq!(size, header.size);
                 
                 if header.access.read() {
@@ -94,18 +94,18 @@ impl<'d, B: Read + Write, const MEM: usize> Slave<'d, B, MEM> {
                 
                 // special actions for special registers
                 let address = local.register();
-                if address == registers::address.address {
-                    control.address = self.get(registers::address).await;
+                if address == registers::ADDRESS.address {
+                    control.address = self.get(registers::ADDRESS).await;
                 }
-                else if address == registers::mapping.address {
-                    let table = self.get(registers::mapping).await;
+                else if address == registers::MAPPING.address {
+                    let table = self.get(registers::MAPPING).await;
                     control.mapping.clear();
                     control.mapping.extend_from_slice(table.map[.. table.size]);
                     control.mapping.sort_by_key(|item| item.virtual_start);
                 }
             }
             // access to bus virtual memory
-            else if !header.access.slave_fixed() && !header.access.slave_topological() {
+            else if !header.access.fixed() && !header.access.topological() {
                 // exchange data according to local mapping
                 header.executed += 1;
                 control.bus.write(&header.to_be_bytes()).await;

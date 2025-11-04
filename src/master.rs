@@ -1,15 +1,16 @@
+use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncRead, AsyncWrite};
-use tokio_serial::{SerialPort, DataBits, Parity, StopBits};
+// use tokio_serial::{SerialStream, SerialPort, DataBits, Parity, StopBits};
+use serial2_tokio::{SerialPort, CharSize, StopBits, Parity};
 use packbytes::{FromBytes, ToBytes, ByteArray};
 use std::{
+    path::Path,
     task::{Poll, Waker},
     future::poll_fn,
-    time::Duration,
-    borrow::Cow,
-    boxed::Box,
     collections::HashMap,
     mem::transmute,
     marker::Unpin,
+//     println, dbg,
     };
 
 use crate::{
@@ -20,20 +21,37 @@ use crate::{
 
 
 #[derive(Copy, Clone)]
-pub enum Host {
-    Topological(u16),
-    Fixed(u16),
-    Virtual,
-}
-#[derive(Copy, Clone)]
 pub enum Address {
     Topological(u16, u16),
     Fixed(u16, u16),
     Virtual(u32),
 }
+#[derive(Copy, Clone)]
+pub enum Host {
+    Topological(u16),
+    Fixed(u16),
+    Virtual,
+}
+impl Host {
+    pub fn at(self, local: u32) -> Address {
+        match self {
+            Host::Topological(slave) => Address::Topological(slave, local.try_into().expect("local address doesn't fit in u16")),
+            Host::Fixed(slave) => Address::Fixed(slave, local.try_into().expect("local address doesn't fit in u16")),
+            Host::Virtual => Address::Virtual(local),
+        }
+    }
+}
+
+
+
+
+#[derive(Error, Debug)]
 pub enum Error {
+    #[error("problem with uart bus")]
     Bus(std::io::Error),
+    #[error("problem detected on slave side")]
     Slave(CommandError),
+    #[error("problem detected on master side")]
     Master(&'static str),
 }
 impl From<std::io::Error> for Error {
@@ -51,6 +69,8 @@ pub struct Master<B> {
     bus: BusyMutex<B>,
     /// command answers currently waited for
     pending: BusyMutex<HashMap<Token, Pending>>,
+    
+    // TODO reimplement pending with an atomic queue
 }
 /// internal struct holding data for receiving command's results
 struct Pending {
@@ -67,37 +87,73 @@ struct Pending {
 type Token = u16;
 
 
-impl Master<Box<dyn SerialPort>> {
-    pub fn new<'a>(path: impl Into<Cow<'a, str>>, rate: u32, timeout: Duration) -> Result<Self, std::io::Error> {
+// impl Master<Box<dyn SerialPort>> {
+//     pub fn new<'a>(path: impl Into<Cow<'a, str>>, rate: u32, timeout: Duration) -> Result<Self, std::io::Error> {
+//         Ok(Self {
+//             bus: BusyMutex::from(SerialStream::open(tokio_serial::new(path, rate)
+//                 .timeout(timeout)
+//                 .data_bits(DataBits::Eight)
+//                 .parity(Parity::Even)
+//                 .stop_bits(StopBits::Two)
+//                 )?),
+//             pending: BusyMutex::from(HashMap::new()),
+//         })
+//     }
+// }
+impl Master<SerialPort> {
+    pub fn new<'a>(path: impl AsRef<Path>, rate: u32) -> Result<Self, std::io::Error> {
         Ok(Self {
-            bus: BusyMutex::from(tokio_serial::new(path, rate)
-                .timeout(timeout)
-                .data_bits(DataBits::Eight)
-                .parity(Parity::Even)
-                .stop_bits(StopBits::Two)
-                .open()?),
+            bus: BusyMutex::from(SerialPort::open(path, |mut settings: serial2_tokio::Settings| {
+                settings.set_raw();
+                settings.set_baud_rate(rate)?;
+                settings.set_char_size(CharSize::Bits8);
+                settings.set_stop_bits(StopBits::Two);
+                settings.set_parity(Parity::Even);
+                Ok(settings)
+                })?),
             pending: BusyMutex::from(HashMap::new()),
         })
     }
 }
 impl<B: AsyncRead + AsyncWrite + Unpin> Master<B> {
     pub async fn read_bytes<'d>(&self, address: Address, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
-        let len = data.len().try_into().expect("data is longer than what u16 can address");
-        self.command(Command::new(address, true, false, len), data).await
+        self.command(Command::new(address, true, false, usize_to_message(data.len())?), data).await
     }
     pub async fn write_bytes(&self, address: Address, data: &mut [u8]) -> ArtcatResult<()> {
-        let len = data.len().try_into().expect("data is longer than what u16 can address");
-        self.command(Command::new(address, false, true, len), data).await 
+        self.command(Command::new(address, false, true, usize_to_message(data.len())?), data).await 
             .map(|a| Answer {data: (), executed: a.executed})
     }
     pub async fn exchange_bytes<'d>(&self, address: Address, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
-        let len = data.len().try_into().expect("data is longer than what u16 can address");
-        self.command(Command::new(address, true, true, len), data).await
+        self.command(Command::new(address, true, true, usize_to_message(data.len())?), data).await
     }
     
-    pub async fn read<T: FromBytes>(&self, host: Host, register: Register<T>) -> ArtcatResult<T> {todo!()}
-    pub async fn write<T: ToBytes>(&self, host: Host, register: Register<T>, value: T) -> ArtcatResult<()> {todo!()}
-    pub async fn exchange<T: ToBytes + FromBytes>(&self, host: Host, register: Register<T>, value: T) -> ArtcatResult<T> {todo!()}
+    pub async fn read<T: FromBytes>(&self, host: Host, register: Register<T>) -> ArtcatResult<T> {
+//         let answers = self.read_bytes(host.at(register.address), T::Bytes::zeroed().as_mut()).await?.answers;
+//             .map(|buffer| T::from_be_bytes(buffer.try_into().unwrap())) )
+        let mut buffer = T::Bytes::zeroed();
+        let executed = self.read_bytes(host.at(register.address), buffer.as_mut()).await?.executed;
+        Ok(Answer{
+            data: T::from_be_bytes(buffer),
+            executed,
+            })
+    }
+    pub async fn write<T: ToBytes>(&self, host: Host, register: Register<T>, value: T) -> ArtcatResult<()> {
+        let executed = self.write_bytes(host.at(register.address), value.to_be_bytes().as_mut()).await?.executed;
+        Ok(Answer{
+            data: (),
+            executed,
+            })
+    }
+    pub async fn exchange<C: ByteArray, T: ToBytes<Bytes=C> + FromBytes<Bytes=C>>(&self, host: Host, register: Register<T>, value: T) -> ArtcatResult<T> {
+//         Ok( self.write_bytes(host.at(register.address), value.to_be_bytes().as_mut()).await
+//             .map(|buffer| T::from_be_bytes(buffer.try_into().unwrap())) )
+        let mut buffer = value.to_be_bytes();
+        let executed = self.write_bytes(host.at(register.address), buffer.as_mut()).await?.executed;
+        Ok(Answer{
+            data: T::from_be_bytes(buffer),
+            executed,
+            })
+    }
     
     
     async fn command<'d>(&self, command: Command, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
@@ -179,24 +235,21 @@ struct Topic<'m, B> {
 }
 impl<'m, B: AsyncRead + AsyncWrite + Unpin> Topic<'m, B> {
     async fn new(master: &'m Master<B>, command: Command, data: &'static mut [u8]) -> Result<Self, Error> {
-        let token;
-        {
-            let mut pending = master.pending.lock().await;
-            token = loop {
-                if let Some(token) = (0 ..= u16::try_from(pending.len()).unwrap()) 
-                    .filter(|k| pending.contains_key(&k))
-                    .next()
-                    {break token}
-                };
-            let mut command = command;
-            command.token = token;
-            pending.insert(token, Pending {
-                command: command,
-                buffer: data,
-                waker: None,
-                result: None,
-                });
-        }
+        let mut pending = master.pending.lock().await;
+        let token = loop {
+            if let Some(token) = (0 ..= u16::try_from(pending.len()).unwrap()) 
+                .filter(|k| ! pending.contains_key(&k))
+                .next()
+                {break token}
+            };
+        let mut command = command;
+        command.token = token;
+        pending.insert(token, Pending {
+            command: command,
+            buffer: data,
+            waker: None,
+            result: None,
+            });
         Ok(Self{master, token})
     }
     /// send the current content of the buffer
@@ -263,4 +316,9 @@ impl<T> Answer<T> {
     pub fn once(self) -> Result<T, Error>  {
         self.exact(1)
     }
+}
+
+fn usize_to_message(size: usize) -> Result<u16, Error> {
+    if size < MAX_COMMAND  {Ok(size as u16)}
+    else {Err(Error::Master("data is longer than maximum allowed message"))}
 }
