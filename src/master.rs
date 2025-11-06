@@ -26,6 +26,17 @@ pub enum Address {
     Fixed(u16, u16),
     Virtual(u32),
 }
+impl Address {
+    pub fn host(self) -> Host {
+        match self {
+            Address::Topological(slave, register) => Host::Topological(slave),
+            Address::Fixed(slave, register) => Host::Fixed(slave),
+            Address::Virtual(global) => Host::Virtual,
+        }
+    }
+}
+
+
 #[derive(Copy, Clone)]
 pub enum Host {
     Topological(u16),
@@ -33,17 +44,14 @@ pub enum Host {
     Virtual,
 }
 impl Host {
-    pub fn at(self, local: u32) -> Address {
+    pub fn at(self, memory: u32) -> Address {
         match self {
-            Host::Topological(slave) => Address::Topological(slave, local.try_into().expect("local address doesn't fit in u16")),
-            Host::Fixed(slave) => Address::Fixed(slave, local.try_into().expect("local address doesn't fit in u16")),
-            Host::Virtual => Address::Virtual(local),
+            Host::Topological(slave) => Address::Topological(slave, memory.try_into().expect("register address doesn't fit in u16")),
+            Host::Fixed(slave) => Address::Fixed(slave, memory.try_into().expect("register address doesn't fit in u16")),
+            Host::Virtual => Address::Virtual(memory),
         }
     }
 }
-
-
-
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -87,19 +95,6 @@ struct Pending {
 type Token = u16;
 
 
-// impl Master<Box<dyn SerialPort>> {
-//     pub fn new<'a>(path: impl Into<Cow<'a, str>>, rate: u32, timeout: Duration) -> Result<Self, std::io::Error> {
-//         Ok(Self {
-//             bus: BusyMutex::from(SerialStream::open(tokio_serial::new(path, rate)
-//                 .timeout(timeout)
-//                 .data_bits(DataBits::Eight)
-//                 .parity(Parity::Even)
-//                 .stop_bits(StopBits::Two)
-//                 )?),
-//             pending: BusyMutex::from(HashMap::new()),
-//         })
-//     }
-// }
 impl Master<SerialPort> {
     pub fn new<'a>(path: impl AsRef<Path>, rate: u32) -> Result<Self, std::io::Error> {
         Ok(Self {
@@ -183,7 +178,9 @@ impl<B: AsyncRead + AsyncWrite + Unpin> Master<B> {
             if let Some(buffer) = pending.get_mut(&header.token) {
                 if !(  buffer.command.token == header.token
                     && buffer.command.access == header.access
-                    && buffer.command.address == header.address
+                    && (buffer.command.address == header.address 
+                        || header.access.topological() 
+                        && SlaveRegister::from(buffer.command.address).register() == SlaveRegister::from(header.address).register())
                     && buffer.command.size == header.size )
                 {
                     buffer.result = Some(Err(Error::Master("reponse header mismatch")));
@@ -215,11 +212,11 @@ impl Command {
         match address {
             Address::Topological(slave, local) => {
                 command.access.set_topological(true);
-                command.address = SlaveLocal::new(slave, local).into();
+                command.address = SlaveRegister::new(slave, local).into();
             },
             Address::Fixed(slave, local) => {
                 command.access.set_fixed(true);
-                command.address = SlaveLocal::new(slave, local).into();
+                command.address = SlaveRegister::new(slave, local).into();
             },
             Address::Virtual(global) => {
                 command.address = global;

@@ -1,0 +1,36 @@
+[package]
+name = "basic_slave"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+embedded-hal-async = "1.0"
+embedded-io-async = "0.7"
+
+esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32"] }
+esp-hal                = { version = "1.0.0", features = ["esp32", "log-04", "unstable"] }
+esp-backtrace          = { version = "0.18", features = ["esp32", "println", "colors", "panic-handler"]}
+esp-rtos = { version = "0.2", features = ["esp32", "log-04", "embassy"] }
+esp-println            = { version = "0.16", features = ["esp32", "log-04"] }
+esp-alloc              = { version = "0.9", features = ["esp32"] }
+critical-section = "1.2"
+embassy-executor = "0.9"
+embassy-time = "0.5"
+embassy-futures = "0.1"
+
+artcat = { version = "0.1", features = ["slave"], path = "../.." }
+
+
+[profile.dev]
+# Rust debug is too slow.
+# For debug builds always builds with some optimization
+opt-level = "s"
+
+[profile.release]
+codegen-units    = 1     # LLVM can perform better optimizations using a single thread
+debug            = 2
+debug-assertions = false
+incremental      = false
+lto              = 'fat'
+opt-level        = 's'
+overflow-checks  = false

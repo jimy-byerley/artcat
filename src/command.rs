@@ -20,14 +20,6 @@ pub struct Command {
     /// number of bytes to read/write, following this header
     pub size: u16,
 }
-/// checksums for command
-#[derive(Copy, Clone, FromBytes, ToBytes, Debug, Default)]
-pub struct CheckSums {
-    /// checksum of header
-    pub header: u8,
-    /// checksum of data
-    pub data: u8,
-}
 
 /// type of memory access
 #[bitsize(8)]
@@ -52,10 +44,19 @@ pack_bilge!(Access);
 
 #[bitsize(32)]
 #[derive(Copy, Clone, FromBits, DebugBits, PartialEq, Default)]
-pub struct SlaveLocal {
+pub struct SlaveRegister {
     /// slave we are adressing the request to
     pub slave: u16,
     /// register we want to access
-    pub local: u16,
+    pub register: u16,
 }
-pack_bilge!(SlaveLocal);
+pack_bilge!(SlaveRegister);
+
+/// checksums for command
+#[derive(Copy, Clone, FromBytes, ToBytes, Debug, Default)]
+pub struct Checksum {
+    /// bitwise xor of the header
+    pub header: u8,
+    /// bitwise xor of the data
+    pub data: u8,
+}

@@ -15,12 +15,12 @@ impl<T> Register<T> {
 
 /// slave fixed address
 pub const ADDRESS: Register<u16> = Register::new(0x0);
-/// first communication error raise by slave, write to to 0 to reset
+/// first communication error raise by slave, write to 0 to reset
 pub const ERROR: Register<CommandError> = Register::new(0x2);
+/// count the number of loss sequences detected since last reset, write to 0 to reset
+pub const LOSS: Register<u16> = Register::new(0x3);
 /// protocol version
-pub const VERSION: Register<u8> = Register::new(0x3);
-//         /// error message, must be a UTF8 zero-terminated string
-//         pub const message: Register<[u8; 32]> = Register::new(0x4);
+pub const VERSION: Register<u8> = Register::new(0x5);
 /// slave standard informations
 pub const DEVICE: Register::<Device> = Register::new(0x20);
 /// slave clock value when reading
@@ -33,28 +33,32 @@ pub const MAPPING: Register::<MappingTable> = Register::new(0x200);
 #[derive(Copy, Clone, FromBytes, ToBytes, Debug)]
 pub struct Device {
     /// model name, must be a UTF8 zero-terminated string
-    model: [u8; 32],
+    pub model: [u8; 32],
     /// version of the slave's hardware, arbitrary format, must be a UTF8 zero-terminated string
-    hardware_version: [u8; 32],
+    pub hardware_version: [u8; 32],
     /// version of the slave's software, arbitrary format, must be a UTF8 zero-terminated string
-    software_version: [u8; 32],
+    pub software_version: [u8; 32],
 }
 #[derive(Copy, Clone, FromBytes, ToBytes, Debug)]
 pub struct MappingTable {
-    size: u8,
-    map: [Mapping; 128],
+    pub size: u8,
+    pub map: [Mapping; 128],
 }
 #[derive(Copy, Clone, FromBytes, ToBytes, Debug)]
 pub struct Mapping {
-    mapped_start: u32,
-    slave_start: u16,
-    size: u16,
+    pub virtual_start: u32,
+    pub slave_start: u16,
+    pub size: u16,
 }
-#[repr(u8)]
-#[derive(Copy, Clone, Default, Debug)]
+
+use bilge::prelude::*;
+use crate::pack_enum;
+#[bitsize(8)]
+#[derive(Copy, Clone, Default, FromBits, Debug, PartialEq)]
 pub enum CommandError {
     #[default]
     None = 0,
+    #[fallback]
     Unknown = 255,
     
     /// received command doesn't exist
@@ -66,3 +70,4 @@ pub enum CommandError {
     /// register set in mapping doesn't exist
     InvalidMapping = 4,
 }
+pack_enum!(CommandError);
