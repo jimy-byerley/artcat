@@ -1,6 +1,7 @@
 use core::ops::{BitXor, Deref, DerefMut};
 use packbytes::{FromBytes, ToBytes, ByteArray};
 use embedded_io_async::{Read, Write, ReadExactError};
+use log::*;
 
 use crate::{
     mutex::*,
@@ -59,68 +60,79 @@ impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
 }
 impl<B: Read + Write> SlaveControl<B> {
     async fn receive_command<const MEM: usize>(&mut self, slave: &Slave<B, MEM>) -> Result<(), B::Error> {
-        let mut header = <Command as FromBytes>::Bytes::zeroed();
-        let mut checksum = <Checksum as FromBytes>::Bytes::zeroed();
+        let mut buff_header = <Command as FromBytes>::Bytes::zeroed();
+//         let mut buff_checksum = <Checksum as FromBytes>::Bytes::zeroed();
         // read header
-        no_eof(self.bus.read_exact(&mut header).await)?;
-        no_eof(self.bus.read_exact(&mut checksum).await)?;
+        debug!("waiting header");
+        no_eof(self.bus.read_exact(&mut buff_header).await)?;
+//         debug!("waiting checksum");
+//         no_eof(self.bus.read_exact(&mut checksum).await)?;
+        debug!("received header {:?}", buff_header);
         
-        let checksum = Checksum::from_be_bytes(checksum);
+//         let checksum = Checksum::from_be_bytes(checksum);
         
-        if checksum.header != header.iter().cloned().reduce(BitXor::bitxor).unwrap() {
-            {
-                let mut buffer = slave.lock().await;
-                let count = buffer.get(registers::LOSS);
-                buffer.set(registers::LOSS, count.saturating_add(1));
-            }
-            self.bus.write(&header.to_be_bytes()).await?;
-            return Ok(());
-        }
+//         if checksum.header != header.iter().cloned().reduce(BitXor::bitxor).unwrap() {
+//             {
+//                 let mut buffer = slave.lock().await;
+//                 let count = buffer.get(registers::LOSS);
+//                 buffer.set(registers::LOSS, count.saturating_add(1));
+//             }
+//             self.bus.write(&header.to_be_bytes()).await?;
+//             return Ok(());
+//         }
         
-        let mut header = Command::from_be_bytes(header);
-        let mut local = SlaveRegister::from(header.address);
+        let recv_header = Command::from_be_bytes(buff_header);
+        let recv_register = SlaveRegister::from(recv_header.address);
+        let mut send_header = recv_header.clone();
+        
+        debug!("receive header {:?} {:#?}", recv_register, recv_header);
         
         // check command consistency
-        if usize::from(header.size) > MAX_COMMAND {
+        if usize::from(recv_header.size) > MAX_COMMAND {
             slave.lock().await.set_error(registers::CommandError::InvalidAccess);
-            self.bus.write(&header.to_be_bytes()).await?;
+            self.bus.write(&send_header.to_be_bytes()).await?;
             return Ok(());
         }
-        if header.access.fixed() && header.access.topological() {
+        if recv_header.access.fixed() && recv_header.access.topological() {
             slave.lock().await.set_error(registers::CommandError::InvalidCommand);
-            self.bus.write(&header.to_be_bytes()).await?;
+            self.bus.write(&send_header.to_be_bytes()).await?;
             return Ok(());
         }
         
         // logic for topologial addresses
-        if header.access.topological() {
-            local.set_slave(local.slave().wrapping_sub(1));
-            header.address = local.into();
+        if recv_header.access.topological() {
+            let mut send_register = recv_register.clone();
+            send_register.set_slave(recv_register.slave().wrapping_sub(1));
+            send_header.address = send_register.into();
         }
         // direct access to slave buffer
-        if header.access.fixed() && local.slave() == self.address
-        || header.access.topological() && local.slave() == 0 
+        if recv_header.access.fixed() && recv_register.slave() == self.address
+        || recv_header.access.topological() && recv_register.slave() == 0 
         {
+            debug!("read slave buffer");
             // exchange requested chunk of data
             // mark the command executed
-            header.executed += 1;
-            self.bus.write(&header.to_be_bytes()).await?;
-            self.transceive_slave_data(slave, header).await?;
+            send_header.executed += 1;
+            self.bus.write(&send_header.to_be_bytes()).await?;
+            self.transceive_slave_data(slave, recv_header).await?;
         }
         // access to bus virtual memory
-        else if !header.access.fixed() && !header.access.topological() {
+        else if !recv_header.access.fixed() && !recv_header.access.topological() {
+            debug!("read virtual memory");
             // exchange data according to local mapping
-            header.executed += 1;
-            self.bus.write(&header.to_be_bytes()).await?;
-            self.transceive_virtual_data(slave, header).await?;
+            send_header.executed += 1;
+            self.bus.write(&send_header.to_be_bytes()).await?;
+            self.transceive_virtual_data(slave, recv_header).await?;
         }
         // any other command
         else {
+            debug!("ignore command");
             // simply pass data
-            self.bus.write(&header.to_be_bytes()).await?;
+            self.bus.write(&send_header.to_be_bytes()).await?;
             
-            no_eof(self.bus.read_exact(&mut self.receive[.. usize::from(header.size)]).await)?;
-            self.bus.write(&self.receive[.. usize::from(header.size)]).await?;
+            debug!("waiting data");
+            no_eof(self.bus.read_exact(&mut self.receive[.. usize::from(recv_header.size)]).await)?;
+            self.bus.write(&self.receive[.. usize::from(recv_header.size)]).await?;
         }
         Ok(())
     }
@@ -128,6 +140,7 @@ impl<B: Read + Write> SlaveControl<B> {
     async fn transceive_slave_data<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, header: Command) -> Result<(), B::Error> {
         let size = usize::from(header.size);
         
+        debug!("waiting data");
         no_eof(self.bus.read_exact(&mut self.receive[..size]).await)?;
         let local = SlaveRegister::from(header.address);
         

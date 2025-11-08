@@ -15,7 +15,8 @@ use esp_hal::{
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use embassy_futures::join::join;
-// use esp_println::{println, dbg};
+use esp_println as _;
+use log::*;
 
 use artcat::{
     registers::*, 
@@ -40,6 +41,7 @@ async fn main(_spawner: Spawner) {
     const MEMORY: usize = 0x304;
     const COUNTER: Register<u32> = Register::new(0x300);
     // initialize slave
+    info!("setting up slave");
     let config = esp_hal::uart::Config::default()
         .with_baudrate(9600)
         .with_data_bits(DataBits::_8)
@@ -47,16 +49,18 @@ async fn main(_spawner: Spawner) {
         .with_stop_bits(StopBits::_2)
         ;
     let bus = esp_hal::uart::Uart::new(peripherals.UART1, config).unwrap()
-        .with_rx(peripherals.GPIO1)
-        .with_tx(peripherals.GPIO2)
+        .with_rx(peripherals.GPIO16)
+        .with_tx(peripherals.GPIO17)
         .into_async();
     let slave = Slave::<_, MEMORY>::new(bus, Device {
         model: "esp32-example".try_into().unwrap(),
         hardware_version: "0.1".try_into().unwrap(),
         software_version: "0.1".try_into().unwrap(),
         });
+    info!("init done");
     // refresh registers periodically
     let task = async {
+        info!("running task");
         loop {
             Timer::after(Duration::from_millis(200)).await;
             let mut buffer = slave.lock().await;

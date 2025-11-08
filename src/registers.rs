@@ -81,17 +81,17 @@ pub struct StringArray {
 impl TryFrom<&str> for StringArray {
     type Error = &'static str;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let value = value.as_bytes();
         let size = u16::try_from(value.len()) .map_err(|_|  "input string exceeds maximum size")?;
         let mut dst = Self {size, .. Default::default()};
         if dst.buffer.len() >= 32
             {return Err("input string too long");}
-        dst.buffer.copy_from_slice(value.as_bytes());
+        dst.buffer[..value.len()] .copy_from_slice(value);
         Ok(dst)
     }
 }
-impl<'s> TryInto<&'s str> for &'s StringArray {
-    type Error = core::str::Utf8Error;
-    fn try_into(self) -> Result<&'s str, Self::Error> {
+impl StringArray {
+    pub fn as_str(&self) -> Result<&'_ str, core::str::Utf8Error> {
         str::from_utf8(&self.buffer[.. usize::from(self.size)])
     }
 }

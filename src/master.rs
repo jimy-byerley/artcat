@@ -1,4 +1,5 @@
 use thiserror::Error;
+use log::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncRead, AsyncWrite};
 // use tokio_serial::{SerialStream, SerialPort, DataBits, Parity, StopBits};
 use serial2_tokio::{SerialPort, CharSize, StopBits, Parity};
@@ -10,7 +11,7 @@ use std::{
     collections::HashMap,
     mem::transmute,
     marker::Unpin,
-//     println, dbg,
+    println, dbg,
     };
 
 use crate::{
@@ -29,9 +30,9 @@ pub enum Address {
 impl Address {
     pub fn host(self) -> Host {
         match self {
-            Address::Topological(slave, register) => Host::Topological(slave),
-            Address::Fixed(slave, register) => Host::Fixed(slave),
-            Address::Virtual(global) => Host::Virtual,
+            Address::Topological(slave, _) => Host::Topological(slave),
+            Address::Fixed(slave, _) => Host::Fixed(slave),
+            Address::Virtual(_) => Host::Virtual,
         }
     }
 }
@@ -72,9 +73,10 @@ type ArtcatResult<T> = Result<Answer<T>, Error>;
 
 
 /// artcat master implementation
-pub struct Master<B> {
+pub struct Master<Rx, Tx> {
     /// uart RX/TX stream
-    bus: BusyMutex<B>,
+    receive: BusyMutex<Rx>,
+    transmit: BusyMutex<Tx>,
     /// command answers currently waited for
     pending: BusyMutex<HashMap<Token, Pending>>,
     
@@ -95,22 +97,29 @@ struct Pending {
 type Token = u16;
 
 
-impl Master<SerialPort> {
+impl Master<SerialPort, SerialPort> {
     pub fn new<'a>(path: impl AsRef<Path>, rate: u32) -> Result<Self, std::io::Error> {
-        Ok(Self {
-            bus: BusyMutex::from(SerialPort::open(path, |mut settings: serial2_tokio::Settings| {
+        let mut bus1 = SerialPort::open(path, |mut settings: serial2_tokio::Settings| {
                 settings.set_raw();
                 settings.set_baud_rate(rate)?;
                 settings.set_char_size(CharSize::Bits8);
                 settings.set_stop_bits(StopBits::Two);
                 settings.set_parity(Parity::Even);
                 Ok(settings)
-                })?),
+                })?;
+        let bus2 = bus1.try_clone()?;
+        Ok(Self {
+            receive: BusyMutex::from(bus1),
+            transmit: BusyMutex::from(bus2),
             pending: BusyMutex::from(HashMap::new()),
         })
     }
 }
-impl<B: AsyncRead + AsyncWrite + Unpin> Master<B> {
+impl<Rx, Tx> Master<Rx, Tx>
+where 
+    Rx: AsyncRead + Unpin, 
+    Tx: AsyncWrite + Unpin
+{
     pub async fn read_bytes<'d>(&self, address: Address, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
         self.command(Command::new(address, true, false, usize_to_message(data.len())?), data).await
     }
@@ -152,6 +161,7 @@ impl<B: AsyncRead + AsyncWrite + Unpin> Master<B> {
     
     
     async fn command<'d>(&self, command: Command, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+        debug!("start command {:#?}", command);
         let topic = Topic::new(self, command, unsafe{ transmute::<&mut [u8], &'static mut [u8]>(data) }).await?;
         topic.send().await?;
         let executed = topic.receive().await?;
@@ -166,9 +176,11 @@ impl<B: AsyncRead + AsyncWrite + Unpin> Master<B> {
         let mut receive = [0u8; MAX_COMMAND];
         loop {
             let (header, data) = {
-                let mut bus = self.bus.lock().await;
+                let mut bus = self.receive.lock().await;
                 bus.read_exact(&mut header).await?;
+                debug!("read header {:?}", header);
                 let header = Command::from_be_bytes(header);
+                debug!("header {:?} {:#?}", SlaveRegister::from(header.address), header);
                 let data = &mut receive[.. usize::from(header.size)];
                 bus.read_exact(data).await?;
                 (header, data)
@@ -226,12 +238,16 @@ impl Command {
     }
 }
 
-struct Topic<'m, B> {
-    master: &'m Master<B>,
+struct Topic<'m, Rx, Tx> {
+    master: &'m Master<Rx, Tx>,
     token: Token,
 }
-impl<'m, B: AsyncRead + AsyncWrite + Unpin> Topic<'m, B> {
-    async fn new(master: &'m Master<B>, command: Command, data: &'static mut [u8]) -> Result<Self, Error> {
+impl<'m, Rx, Tx> Topic<'m, Rx, Tx>
+where 
+    Rx: AsyncRead + Unpin, 
+    Tx: AsyncWrite + Unpin
+{
+    async fn new(master: &'m Master<Rx, Tx>, command: Command, data: &'static mut [u8]) -> Result<Self, Error> {
         let mut pending = master.pending.lock().await;
         let token = loop {
             if let Some(token) = (0 ..= u16::try_from(pending.len()).unwrap()) 
@@ -254,7 +270,8 @@ impl<'m, B: AsyncRead + AsyncWrite + Unpin> Topic<'m, B> {
         let mut pending = self.master.pending.lock().await;
         let buffer = pending.get_mut(&self.token).unwrap();
         {
-            let mut bus = self.master.bus.lock().await;
+            let mut bus = self.master.transmit.lock().await;
+            debug!("send {:?} {:#?}", SlaveRegister::from(buffer.command.address), buffer.command);
             bus.write(&buffer.command.to_be_bytes()).await?;
             bus.write(buffer.buffer).await?;
         }
@@ -276,7 +293,7 @@ impl<'m, B: AsyncRead + AsyncWrite + Unpin> Topic<'m, B> {
         }).await
     }
 }
-impl<B> Drop for Topic<'_, B> {
+impl<Rx, Tx> Drop for Topic<'_, Rx, Tx> {
     fn drop(&mut self) {
         loop {
             if let Some(mut pending) = self.master.pending.try_lock() {
