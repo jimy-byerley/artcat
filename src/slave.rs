@@ -25,6 +25,8 @@ struct SlaveControl<B> {
     receive: [u8; MAX_COMMAND],
     send: [u8; MAX_COMMAND],
 }
+
+// TODO implement loss recovery
 impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
     pub fn new(bus: B, device: registers::Device) -> Self {
         let mut buffer = SlaveBuffer {buffer: [0; MEM]};

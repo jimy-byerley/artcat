@@ -11,6 +11,7 @@ use std::{
     collections::HashMap,
     mem::transmute,
     marker::Unpin,
+    boxed::Box,
     println, dbg,
     };
 
@@ -73,10 +74,10 @@ type ArtcatResult<T> = Result<Answer<T>, Error>;
 
 
 /// artcat master implementation
-pub struct Master<Rx, Tx> {
+pub struct Master {
     /// uart RX/TX stream
-    receive: BusyMutex<Rx>,
-    transmit: BusyMutex<Tx>,
+    receive: BusyMutex<SerialPort>,
+    transmit: BusyMutex<SerialPort>,
     /// command answers currently waited for
     pending: BusyMutex<HashMap<Token, Pending>>,
     
@@ -97,8 +98,10 @@ struct Pending {
 type Token = u16;
 
 
-impl Master<SerialPort, SerialPort> {
-    pub fn new<'a>(path: impl AsRef<Path>, rate: u32) -> Result<Self, std::io::Error> {
+// TODO implement per-command timeout
+// TODO implement loss recovery
+impl Master {
+    pub fn new(path: impl AsRef<Path>, rate: u32) -> Result<Self, std::io::Error> {
         let mut bus1 = SerialPort::open(path, |mut settings: serial2_tokio::Settings| {
                 settings.set_raw();
                 settings.set_baud_rate(rate)?;
@@ -115,11 +118,7 @@ impl Master<SerialPort, SerialPort> {
         })
     }
 }
-impl<Rx, Tx> Master<Rx, Tx>
-where 
-    Rx: AsyncRead + Unpin, 
-    Tx: AsyncWrite + Unpin
-{
+impl Master {
     pub async fn read_bytes<'d>(&self, address: Address, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
         self.command(Command::new(address, true, false, usize_to_message(data.len())?), data).await
     }
@@ -238,16 +237,12 @@ impl Command {
     }
 }
 
-struct Topic<'m, Rx, Tx> {
-    master: &'m Master<Rx, Tx>,
+struct Topic<'m> {
+    master: &'m Master,
     token: Token,
 }
-impl<'m, Rx, Tx> Topic<'m, Rx, Tx>
-where 
-    Rx: AsyncRead + Unpin, 
-    Tx: AsyncWrite + Unpin
-{
-    async fn new(master: &'m Master<Rx, Tx>, command: Command, data: &'static mut [u8]) -> Result<Self, Error> {
+impl<'m> Topic<'m> {
+    async fn new(master: &'m Master, command: Command, data: &'static mut [u8]) -> Result<Self, Error> {
         let mut pending = master.pending.lock().await;
         let token = loop {
             if let Some(token) = (0 ..= u16::try_from(pending.len()).unwrap()) 
@@ -293,7 +288,7 @@ where
         }).await
     }
 }
-impl<Rx, Tx> Drop for Topic<'_, Rx, Tx> {
+impl Drop for Topic<'_> {
     fn drop(&mut self) {
         loop {
             if let Some(mut pending) = self.master.pending.try_lock() {
