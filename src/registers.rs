@@ -30,16 +30,16 @@ pub const MAPPING: Register::<MappingTable> = Register::new(0x200);
 
 
 /// slave standard informations
-#[derive(Copy, Clone, FromBytes, ToBytes, Debug)]
+#[derive(Clone, FromBytes, ToBytes, Debug)]
 pub struct Device {
-    /// model name, must be a UTF8 zero-terminated string
-    pub model: [u8; 32],
-    /// version of the slave's hardware, arbitrary format, must be a UTF8 zero-terminated string
-    pub hardware_version: [u8; 32],
-    /// version of the slave's software, arbitrary format, must be a UTF8 zero-terminated string
-    pub software_version: [u8; 32],
+    /// model name
+    pub model: StringArray,
+    /// version of the slave's hardware
+    pub hardware_version: StringArray,
+    /// version of the slave's software
+    pub software_version: StringArray,
 }
-#[derive(Copy, Clone, FromBytes, ToBytes, Debug)]
+#[derive(Clone, FromBytes, ToBytes, Debug)]
 pub struct MappingTable {
     pub size: u8,
     pub map: [Mapping; 128],
@@ -71,3 +71,27 @@ pub enum CommandError {
     InvalidMapping = 4,
 }
 pack_enum!(CommandError);
+
+
+#[derive(Clone, Debug, Default, FromBytes, ToBytes)]
+pub struct StringArray {
+    pub size: u16,
+    pub buffer: [u8; 30],
+}
+impl TryFrom<&str> for StringArray {
+    type Error = &'static str;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let size = u16::try_from(value.len()) .map_err(|_|  "input string exceeds maximum size")?;
+        let mut dst = Self {size, .. Default::default()};
+        if dst.buffer.len() >= 32
+            {return Err("input string too long");}
+        dst.buffer.copy_from_slice(value.as_bytes());
+        Ok(dst)
+    }
+}
+impl<'s> TryInto<&'s str> for &'s StringArray {
+    type Error = core::str::Utf8Error;
+    fn try_into(self) -> Result<&'s str, Self::Error> {
+        str::from_utf8(&self.buffer[.. usize::from(self.size)])
+    }
+}

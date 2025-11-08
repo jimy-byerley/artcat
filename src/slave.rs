@@ -21,10 +21,31 @@ struct SlaveControl<B> {
     receive: [u8; MAX_COMMAND],
     send: [u8; MAX_COMMAND],
 }
+struct SlaveBuffer<'b, const MEM: usize> {
+    guard: BusyMutexGuard<'b, [u8; MEM]>,
+}
 impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
     pub fn new(bus: B, device: registers::Device) -> Self {
-        todo!()
+        let new = Self {
+            buffer: BusyMutex::from([0; MEM]),
+            control: BusyMutex::from(SlaveControl {
+                bus,
+                address: 0,
+                mapping: heapless::Vec::new(),
+                receive: [0; MAX_COMMAND],
+                send: [0; MAX_COMMAND],
+            }),
+        };
+        {
+            let mut buffer = new.try_lock().unwrap();
+            buffer.set(registers::VERSION, 1);
+            buffer.set(registers::DEVICE, device);
+        }
+        new
     }
+    pub async fn lock(&self) -> SlaveBuffer<'_, MEM> {todo!()}
+    pub fn try_lock(&self) -> Option<SlaveBuffer<'_, MEM>> {todo!()}
+    
     pub async fn get<T: FromBytes>(&self, register: Register<T>) -> T {
         let mut dst = T::Bytes::zeroed();
         let src = self.buffer.lock().await;
@@ -153,6 +174,30 @@ impl<B: Read + Write> SlaveControl<B> {
     
     async fn receive_virtual_data<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, header: Command) -> Result<(), B::Error> {
         todo!("iterate over mappings inside the requested area and exchange with registers")
+    }
+}
+
+use core::ops::{Deref, DerefMut};
+impl<'b, const MEM: usize> SlaveBuffer<'b, MEM> {
+    pub fn get<T: FromBytes>(&self, register: Register<T>) -> T {
+        let mut dst = T::Bytes::zeroed();
+        dst.as_mut().copy_from_slice(&self.guard[usize::try_from(register.address).unwrap() ..][.. T::Bytes::SIZE]);
+        T::from_be_bytes(dst)
+    }
+    pub fn set<T: ToBytes>(&mut self, register: Register<T>, value: T) {
+        let src = value.to_be_bytes();
+        self.guard[usize::try_from(register.address).unwrap() ..][.. T::Bytes::SIZE].copy_from_slice(src.as_ref());
+    }
+}
+// TODO: better AsRef or Deref ?
+impl<'b, const MEM: usize> AsRef<[u8]> for SlaveBuffer<'b, MEM> {
+    fn as_ref(&self) -> &[u8] {
+        self.guard.deref().as_ref()
+    }
+}
+impl<'b, const MEM: usize> AsMut<[u8]> for SlaveBuffer<'b, MEM> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.guard.deref_mut().as_mut()
     }
 }
 

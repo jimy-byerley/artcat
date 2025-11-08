@@ -51,9 +51,9 @@ async fn main(_spawner: Spawner) {
         .with_tx(peripherals.GPIO2)
         .into_async();
     let slave = Slave::<_, MEMORY>::new(bus, Device {
-        model: "esp32-example".as_bytes(),
-        hardware_version: "0.1".as_bytes(),
-        software_version: "0.1".as_bytes(),
+        model: "esp32-example".try_into().unwrap(),
+        hardware_version: "0.1".try_into().unwrap(),
+        software_version: "0.1".try_into().unwrap(),
         });
     // refresh registers periodically
     let task = async {
