@@ -38,7 +38,7 @@ async fn main(_spawner: Spawner) {
     
     // declare some application-specific registers
     const MEMORY: usize = 0x304;
-    let counter = Register::<u32>::new(0x300);
+    const COUNTER: Register<u32> = Register::new(0x300);
     // initialize slave
     let config = esp_hal::uart::Config::default()
         .with_baudrate(9600)
@@ -59,7 +59,9 @@ async fn main(_spawner: Spawner) {
     let task = async {
         loop {
             Timer::after(Duration::from_millis(200)).await;
-            slave.set(counter, slave.get(counter).await + 1).await;
+            let mut buffer = slave.lock().await;
+            let count = buffer.get(COUNTER);
+            buffer.set(COUNTER, count + 1);
         }
     };
     // run application-specific task and slave concurrently
