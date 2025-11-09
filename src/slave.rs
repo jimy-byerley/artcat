@@ -1,4 +1,4 @@
-use core::ops::{BitXor, Deref, DerefMut};
+use core::ops::{BitXor, Deref, DerefMut, Range};
 use packbytes::{FromBytes, ToBytes, ByteArray};
 use embedded_io_async::{Read, Write, ReadExactError};
 use log::*;
@@ -32,6 +32,8 @@ impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
         let mut buffer = SlaveBuffer {buffer: [0; MEM]};
         buffer.set(registers::VERSION, 1);
         buffer.set(registers::DEVICE, device);
+        buffer.set(registers::LOSS, 0);
+        buffer.set(registers::ADDRESS, 0);
         
         let new = Self {
             buffer: BusyMutex::from(buffer),
@@ -117,6 +119,7 @@ impl<B: Read + Write> SlaveControl<B> {
             send_header.executed += 1;
             self.bus.write(&send_header.to_be_bytes()).await?;
             self.transceive_slave_data(slave, recv_header).await?;
+            self.bus.write(&self.send[.. usize::from(recv_header.size)]).await?;
         }
         // access to bus virtual memory
         else if !recv_header.access.fixed() && !recv_header.access.topological() {
@@ -125,6 +128,7 @@ impl<B: Read + Write> SlaveControl<B> {
             send_header.executed += 1;
             self.bus.write(&send_header.to_be_bytes()).await?;
             self.transceive_virtual_data(slave, recv_header).await?;
+            self.bus.write(&self.send[.. usize::from(recv_header.size)]).await?;
         }
         // any other command
         else {
@@ -138,35 +142,75 @@ impl<B: Read + Write> SlaveControl<B> {
         }
         Ok(())
     }
-    
+    /// exchange directly with slave buffer, executing special operations on reading and writing special registers
     async fn transceive_slave_data<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, header: Command) -> Result<(), B::Error> {
         let size = usize::from(header.size);
         
         debug!("waiting data");
         no_eof(self.bus.read_exact(&mut self.receive[..size]).await)?;
-        let local = SlaveRegister::from(header.address);
+        // get address in slave's buffer
+        let address = SlaveRegister::from(header.address);
         
-        if header.access.read() {
+        // request specifically addressed to this slave is always locking its buffer
+        {
+            // lock slave's buffer only once
             let mut buffer = slave.buffer.lock().await;
-            self.on_read(&mut buffer, local.register());
-            self.send[..size] .copy_from_slice(&buffer[usize::from(local.register()) ..][.. size]);
+            
+            // read buffer before writing it
+            if header.access.read() {
+                self.on_read(&mut buffer, address.register());
+                self.send[..size] .copy_from_slice(&buffer[usize::from(address.register()) ..][.. size]);
+            }
+            else {
+                self.send[..size] .copy_from_slice(&self.receive[..size]);
+            }
+            if header.access.write() {
+                buffer[usize::from(address.register()) ..][.. size] .copy_from_slice(&self.receive[..size]);
+                self.on_write(&mut buffer, address.register());
+            }
         }
-        else {
-            self.send[..size] .copy_from_slice(&self.receive[..size]);
-        }
+        Ok(())
+    }
+    /// iterate over mappings inside the requested area and exchange with registers
+    async fn transceive_virtual_data<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, header: Command) -> Result<(), B::Error> {
+        let size = usize::from(header.size);
         
-        self.bus.write(&self.send[..size]).await?;
+        debug!("waiting data");
+        no_eof(self.bus.read_exact(&mut self.receive[..size]).await)?;
+        // get concerned mapping
+        let start = bisect_slice(&self.mapping, |item| item.virtual_start <= header.address);
+        let stop = bisect_slice(&self.mapping[start ..], |item| item.virtual_start <= header.address + u32::from(header.size));
         
-        if header.access.write() {
+        // transmit all unless altered by mapping
+        self.send[..size] .copy_from_slice(&self.receive[..size]);
+        
+        // only lock if concerned by this frame (frames not concerning this slave at all will never lock the slave task)
+        if stop > start {
+            // lock slave's buffer only once
             let mut buffer = slave.buffer.lock().await;
-            buffer[usize::from(local.register()) ..][.. size] .copy_from_slice(&self.receive[..size]);
-            self.on_write(&mut buffer, local.register());
+            
+            // read buffer before writing it
+            if header.access.read() {
+                for &mapped in &self.mapping[start .. stop] {
+                    if let Some((dst, src)) = map_frame_slave(mapped, header) {
+                        self.send[dst].copy_from_slice(&buffer[src]);
+                    }
+                }
+            }
+            if header.access.write() {
+                for &mapped in &self.mapping[start .. stop] {
+                    if let Some((src, dst)) = map_frame_slave(mapped, header) {
+                        buffer[dst].copy_from_slice(&self.receive[src]);
+                    }
+                }
+            }
         }
         Ok(())
     }
     
     /// special actions when reading special registers
-    fn on_read<const MEM: usize>(&mut self, buffer: &mut SlaveBuffer<MEM>, address: u16) {
+    fn on_read<const MEM: usize>(&mut self, _buffer: &mut SlaveBuffer<MEM>, _address: u16) {
+        // TODO clock interrogation
     }
     
     /// special actions when writing special registers
@@ -177,14 +221,18 @@ impl<B: Read + Write> SlaveControl<B> {
         }
         else if address == registers::MAPPING.address {
             let table = buffer.get(registers::MAPPING);
-//             self.mapping.clear();
-//             self.mapping.extend_from_slice(&table.map[.. usize::from(table.size)]);
-//             self.mapping.sort_by_key(|item| item.virtual_start);
+            self.mapping.clear();
+            self.mapping.extend_from_slice(&table.map[.. usize::from(table.size)]).unwrap();
+            self.mapping.sort_unstable_by_key(|item| item.virtual_start);
+            for mapped in &self.mapping {
+                if usize::from(mapped.slave_start + mapped.size) > buffer.len()
+                || usize::from(mapped.slave_start) > buffer.len()
+                || u32::MAX - mapped.virtual_start < u32::from(mapped.size) {
+                    buffer.set_error(registers::CommandError::InvalidMapping);
+                    // TODO set the error flag in the header
+                }
+            }
         }
-    }
-    
-    async fn transceive_virtual_data<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, header: Command) -> Result<(), B::Error> {
-        todo!("iterate over mappings inside the requested area and exchange with registers")
     }
 }
 
@@ -203,7 +251,7 @@ impl<const MEM: usize> SlaveBuffer<MEM> {
     /// set current command error, if not already set
     fn set_error(&mut self, error: registers::CommandError) {
         if self.get(registers::ERROR) == registers::CommandError::None {
-            self.set(registers::ERROR, registers::CommandError::InvalidAccess);
+            self.set(registers::ERROR, error);
         }
     }
 }
@@ -225,4 +273,50 @@ fn no_eof<T, E>(result: Result<T, ReadExactError<E>>) -> Result<T, E> {
         ReadExactError::UnexpectedEof => panic!(),
         ReadExactError::Other(io) => io,
         })
+}
+/// bisect a slice to find the first index at which `threshold(slice[i])` is True
+fn bisect_slice<T>(slice: &[T], threshold: impl Fn(&T) -> bool) -> usize {
+    let (mut start, mut end) = (0, slice.len());
+    while end > start {
+        let mid = start/2 + end/2;
+        if threshold(&slice[mid]) {
+            start = mid;
+        }
+        else {
+            end = mid;
+        }
+    }
+    start
+}
+/** 
+    return matching ranges in frame data buffer and slave buffer according to the given mapping
+    
+    result is a couple (in frame, in slave)
+*/
+fn map_frame_slave(mapped: registers::Mapping, frame: Command) -> Option<(Range<usize>, Range<usize>)> {
+    let virtual_range = Range {
+        start: mapped.virtual_start,
+        end: mapped.virtual_start + u32::from(mapped.size),
+        };
+    let requested_range = Range {
+        start: frame.address,
+        end: frame.address + u32::from(frame.size),
+        };
+    let intersection = Range {
+        start: virtual_range.start.max(requested_range.start),
+        end: virtual_range.end.min(requested_range.end),
+        };
+    if intersection.end <= intersection.start
+        {return None}
+    
+    Some((
+        Range {
+            start: usize::try_from(intersection.start - frame.address).unwrap(),
+            end: usize::try_from(intersection.end - frame.address).unwrap(),
+        },
+        Range {
+            start: usize::try_from(intersection.start - mapped.virtual_start).unwrap() + usize::from(mapped.slave_start),
+            end: usize::try_from(intersection.end - mapped.virtual_start).unwrap() + usize::from(mapped.slave_start),
+        },
+    ))
 }

@@ -44,7 +44,7 @@ pub struct MappingTable {
     pub size: u8,
     pub map: [Mapping; 128],
 }
-#[derive(Copy, Clone, FromBytes, ToBytes, Debug)]
+#[derive(Copy, Clone, Default, FromBytes, ToBytes, Debug)]
 pub struct Mapping {
     pub virtual_start: u32,
     pub slave_start: u16,
