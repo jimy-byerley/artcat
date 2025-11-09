@@ -86,13 +86,16 @@ impl<B: Read + Write> SlaveControl<B> {
 //         }
         
         let recv_header = Command::from_be_bytes(buff_header);
-        let recv_register = SlaveRegister::from(recv_header.address);
+        let register = SlaveRegister::from(recv_header.address);
+        let size = usize::from(recv_header.size);
         let mut send_header = recv_header.clone();
         
-        debug!("receive header {:?} {:#?}", recv_register, recv_header);
+        debug!("receive header {:?} {:#?}", register, recv_header);
+        
+        no_eof(self.bus.read_exact(&mut self.receive[..size]).await)?;
         
         // check command consistency
-        if usize::from(recv_header.size) > MAX_COMMAND {
+        if size > MAX_COMMAND {
             slave.lock().await.set_error(registers::CommandError::InvalidAccess);
             self.bus.write(&send_header.to_be_bytes()).await?;
             return Ok(());
@@ -105,29 +108,32 @@ impl<B: Read + Write> SlaveControl<B> {
         
         // logic for topologial addresses
         if recv_header.access.topological() {
-            let mut send_register = recv_register.clone();
-            send_register.set_slave(recv_register.slave().wrapping_sub(1));
+            let mut send_register = register.clone();
+            send_register.set_slave(register.slave().wrapping_sub(1));
             send_header.address = send_register.into();
         }
         // direct access to slave buffer
-        if recv_header.access.fixed() && recv_register.slave() == self.address
-        || recv_header.access.topological() && recv_register.slave() == 0 
+        if recv_header.access.fixed() && register.slave() == self.address
+        || recv_header.access.topological() && register.slave() == 0 
         {
-            debug!("read slave buffer");
+            debug!("access slave buffer");
             // exchange requested chunk of data
             // mark the command executed
             send_header.executed += 1;
+            if self.exchange_slave(slave, recv_header).await.is_err() {
+                send_header.access.set_error(true);
+            }
             self.bus.write(&send_header.to_be_bytes()).await?;
-            self.transceive_slave_data(slave, recv_header).await?;
             self.bus.write(&self.send[.. usize::from(recv_header.size)]).await?;
         }
         // access to bus virtual memory
         else if !recv_header.access.fixed() && !recv_header.access.topological() {
-            debug!("read virtual memory");
+            debug!("access virtual memory");
             // exchange data according to local mapping
+            // mark the command executed
             send_header.executed += 1;
             self.bus.write(&send_header.to_be_bytes()).await?;
-            self.transceive_virtual_data(slave, recv_header).await?;
+            self.exchange_virtual(slave, recv_header).await;
             self.bus.write(&self.send[.. usize::from(recv_header.size)]).await?;
         }
         // any other command
@@ -143,13 +149,10 @@ impl<B: Read + Write> SlaveControl<B> {
         Ok(())
     }
     /// exchange directly with slave buffer, executing special operations on reading and writing special registers
-    async fn transceive_slave_data<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, header: Command) -> Result<(), B::Error> {
+    async fn exchange_slave<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, header: Command) -> Result<(), registers::CommandError> {
+        // get memory range in slave buffer
         let size = usize::from(header.size);
-        
-        debug!("waiting data");
-        no_eof(self.bus.read_exact(&mut self.receive[..size]).await)?;
-        // get address in slave's buffer
-        let address = SlaveRegister::from(header.address);
+        let register = SlaveRegister::from(header.address).register();
         
         // request specifically addressed to this slave is always locking its buffer
         {
@@ -158,26 +161,23 @@ impl<B: Read + Write> SlaveControl<B> {
             
             // read buffer before writing it
             if header.access.read() {
-                self.on_read(&mut buffer, address.register());
-                self.send[..size] .copy_from_slice(&buffer[usize::from(address.register()) ..][.. size]);
+                self.on_read(&mut buffer, register);
+                self.send[..size] .copy_from_slice(&buffer[usize::from(register) ..][.. size]);
             }
             else {
                 self.send[..size] .copy_from_slice(&self.receive[..size]);
             }
             if header.access.write() {
-                buffer[usize::from(address.register()) ..][.. size] .copy_from_slice(&self.receive[..size]);
-                self.on_write(&mut buffer, address.register());
+                buffer[usize::from(register) ..][.. size] .copy_from_slice(&self.receive[..size]);
+                self.on_write(&mut buffer, register);
             }
         }
         Ok(())
     }
     /// iterate over mappings inside the requested area and exchange with registers
-    async fn transceive_virtual_data<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, header: Command) -> Result<(), B::Error> {
-        let size = usize::from(header.size);
-        
-        debug!("waiting data");
-        no_eof(self.bus.read_exact(&mut self.receive[..size]).await)?;
+    async fn exchange_virtual<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, header: Command) {
         // get concerned mapping
+        let size = usize::from(header.size);
         let start = bisect_slice(&self.mapping, |item| item.virtual_start <= header.address);
         let stop = bisect_slice(&self.mapping[start ..], |item| item.virtual_start <= header.address + u32::from(header.size));
         
@@ -205,7 +205,6 @@ impl<B: Read + Write> SlaveControl<B> {
                 }
             }
         }
-        Ok(())
     }
     
     /// special actions when reading special registers
@@ -270,7 +269,7 @@ impl<const MEM: usize> DerefMut for SlaveBuffer<MEM> {
 /// simple helper unwrapping eof because they should not appear in bare metal uart, at least in esp32 hal
 fn no_eof<T, E>(result: Result<T, ReadExactError<E>>) -> Result<T, E> {
     result.map_err(|e| match e {
-        ReadExactError::UnexpectedEof => panic!(),
+        ReadExactError::UnexpectedEof => panic!("end of file is not supposed to happend on peripheral"),
         ReadExactError::Other(io) => io,
         })
 }
