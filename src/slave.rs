@@ -1,4 +1,4 @@
-use core::ops::{BitXor, Deref, DerefMut, Range};
+use core::ops::{Deref, DerefMut, Range};
 use packbytes::{FromBytes, ToBytes, ByteArray};
 use embedded_io_async::{Read, Write, ReadExactError};
 use log::*;
@@ -24,6 +24,7 @@ struct SlaveControl<B> {
     address: u16,
     receive: [u8; MAX_COMMAND],
     send: [u8; MAX_COMMAND],
+    send_header: Command,
 }
 
 // TODO implement loss recovery
@@ -43,6 +44,7 @@ impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
                 mapping: heapless::Vec::new(),
                 receive: [0; MAX_COMMAND],
                 send: [0; MAX_COMMAND],
+                send_header: Command::default(),
             }),
         };
         new
@@ -63,96 +65,87 @@ impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
     }
 }
 impl<B: Read + Write> SlaveControl<B> {
-    async fn receive_command<const MEM: usize>(&mut self, slave: &Slave<B, MEM>) -> Result<(), B::Error> {
-        let mut buff_header = <Command as FromBytes>::Bytes::zeroed();
-//         let mut buff_checksum = <Checksum as FromBytes>::Bytes::zeroed();
-        // read header
-        debug!("waiting header");
-        no_eof(self.bus.read_exact(&mut buff_header).await)?;
-//         debug!("waiting checksum");
-//         no_eof(self.bus.read_exact(&mut checksum).await)?;
-        debug!("received header {:?}", buff_header);
-        
-//         let checksum = Checksum::from_be_bytes(checksum);
-        
-//         if checksum.header != header.iter().cloned().reduce(BitXor::bitxor).unwrap() {
-//             {
-//                 let mut buffer = slave.lock().await;
-//                 let count = buffer.get(registers::LOSS);
-//                 buffer.set(registers::LOSS, count.saturating_add(1));
-//             }
-//             self.bus.write(&header.to_be_bytes()).await?;
-//             return Ok(());
-//         }
-        
-        let recv_header = Command::from_be_bytes(buff_header);
-        let register = SlaveRegister::from(recv_header.address);
+    async fn receive_command<const MEM: usize>(&mut self, slave: &Slave<B, MEM>) -> Result<(), Option<B::Error>> {
+        let recv_header = self.catch_header().await?;
         let size = usize::from(recv_header.size);
-        let mut send_header = recv_header.clone();
-        
-        debug!("receive header {:?} {:#?}", register, recv_header);
-        
+        debug!("receive header {:#?}", recv_header);
+        // receive data
         no_eof(self.bus.read_exact(&mut self.receive[..size]).await)?;
+        if checksum(&self.receive[..size]) != recv_header.checksum {
+            return Err(None);
+        }
+        // try to process it
+        self.send_header = recv_header.clone();
+        if let Err(err) = self.process_command(slave, recv_header).await {
+            slave.lock().await.set_error(err);
+            self.send_header.access.set_error(true);
+        }
+        // transmit anyway
+        self.bus.write(&self.send_header.to_be_bytes()).await?;
+        self.bus.write(&self.send[.. size]).await?;
+        Ok(())
+    }
+    async fn catch_header(&mut self) -> Result<Command, B::Error> {
+        const HEADER: usize = <Command as FromBytes>::Bytes::SIZE;
+        // receive an amount that can be a header and its checksum
+        debug!("waiting header");
+        no_eof(self.bus.read_exact(&mut self.receive[.. HEADER+1]).await)?;
+        // loop until checksum is good to catch up new command
+        debug!("catching up header");
+        while checksum(&self.receive[.. HEADER+1]) != 0 {
+            self.receive[.. HEADER+1].rotate_left(1);
+            no_eof(self.bus.read_exact(&mut self.receive[HEADER .. HEADER+1]).await)?;
+        }
+        Ok(Command::from_be_bytes(self.receive[.. HEADER].try_into().unwrap()))
+    }
+    async fn process_command<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, recv_header: Command) -> Result<(), registers::CommandError> {
+        let size = usize::from(recv_header.size);
         
         // check command consistency
         if size > MAX_COMMAND {
-            slave.lock().await.set_error(registers::CommandError::InvalidAccess);
-            self.bus.write(&send_header.to_be_bytes()).await?;
-            return Ok(());
+            return Err(registers::CommandError::InvalidAccess);
         }
         if recv_header.access.fixed() && recv_header.access.topological() {
-            slave.lock().await.set_error(registers::CommandError::InvalidCommand);
-            self.bus.write(&send_header.to_be_bytes()).await?;
-            return Ok(());
+            return Err(registers::CommandError::InvalidCommand);
         }
         
         // logic for topologial addresses
         if recv_header.access.topological() {
-            let mut send_register = register.clone();
-            send_register.set_slave(register.slave().wrapping_sub(1));
-            send_header.address = send_register.into();
+            let slave = recv_header.address.slave();
+            self.send_header.address.set_slave(slave.wrapping_sub(1));
         }
         // direct access to slave buffer
-        if recv_header.access.fixed() && register.slave() == self.address
-        || recv_header.access.topological() && register.slave() == 0 
+        if recv_header.access.fixed() && recv_header.address.slave() == self.address
+        || recv_header.access.topological() && recv_header.address.slave() == 0 
         {
             debug!("access slave buffer");
             // exchange requested chunk of data
             // mark the command executed
-            send_header.executed += 1;
-            if self.exchange_slave(slave, recv_header).await.is_err() {
-                send_header.access.set_error(true);
-            }
-            self.bus.write(&send_header.to_be_bytes()).await?;
-            self.bus.write(&self.send[.. usize::from(recv_header.size)]).await?;
+            self.send_header.executed += 1;
+            return self.exchange_slave(slave, recv_header).await;
         }
         // access to bus virtual memory
         else if !recv_header.access.fixed() && !recv_header.access.topological() {
             debug!("access virtual memory");
             // exchange data according to local mapping
             // mark the command executed
-            send_header.executed += 1;
-            self.bus.write(&send_header.to_be_bytes()).await?;
+            self.send_header.executed += 1;
             self.exchange_virtual(slave, recv_header).await;
-            self.bus.write(&self.send[.. usize::from(recv_header.size)]).await?;
+            return Ok(());
         }
         // any other command
         else {
             debug!("ignore command");
             // simply pass data
-            self.bus.write(&send_header.to_be_bytes()).await?;
-            
-            debug!("waiting data");
-            no_eof(self.bus.read_exact(&mut self.receive[.. usize::from(recv_header.size)]).await)?;
-            self.bus.write(&self.receive[.. usize::from(recv_header.size)]).await?;
+            self.send[..size] .copy_from_slice(&self.receive[..size]);
+            return Ok(());
         }
-        Ok(())
     }
     /// exchange directly with slave buffer, executing special operations on reading and writing special registers
     async fn exchange_slave<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, header: Command) -> Result<(), registers::CommandError> {
         // get memory range in slave buffer
         let size = usize::from(header.size);
-        let register = SlaveRegister::from(header.address).register();
+        let register = header.address.register();
         
         // request specifically addressed to this slave is always locking its buffer
         {
@@ -178,8 +171,8 @@ impl<B: Read + Write> SlaveControl<B> {
     async fn exchange_virtual<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, header: Command) {
         // get concerned mapping
         let size = usize::from(header.size);
-        let start = bisect_slice(&self.mapping, |item| item.virtual_start <= header.address);
-        let stop = bisect_slice(&self.mapping[start ..], |item| item.virtual_start <= header.address + u32::from(header.size));
+        let start = bisect_slice(&self.mapping, |item| item.virtual_start <= u32::from(header.address));
+        let stop = bisect_slice(&self.mapping[start ..], |item| item.virtual_start <= u32::from(header.address) + u32::from(header.size));
         
         // transmit all unless altered by mapping
         self.send[..size] .copy_from_slice(&self.receive[..size]);
@@ -293,13 +286,14 @@ fn bisect_slice<T>(slice: &[T], threshold: impl Fn(&T) -> bool) -> usize {
     result is a couple (in frame, in slave)
 */
 fn map_frame_slave(mapped: registers::Mapping, frame: Command) -> Option<(Range<usize>, Range<usize>)> {
+    let address = u32::from(frame.address);
     let virtual_range = Range {
         start: mapped.virtual_start,
         end: mapped.virtual_start + u32::from(mapped.size),
         };
     let requested_range = Range {
-        start: frame.address,
-        end: frame.address + u32::from(frame.size),
+        start: address,
+        end: address + u32::from(frame.size),
         };
     let intersection = Range {
         start: virtual_range.start.max(requested_range.start),
@@ -310,8 +304,8 @@ fn map_frame_slave(mapped: registers::Mapping, frame: Command) -> Option<(Range<
     
     Some((
         Range {
-            start: usize::try_from(intersection.start - frame.address).unwrap(),
-            end: usize::try_from(intersection.end - frame.address).unwrap(),
+            start: usize::try_from(intersection.start - address).unwrap(),
+            end: usize::try_from(intersection.end - address).unwrap(),
         },
         Range {
             start: usize::try_from(intersection.start - mapped.virtual_start).unwrap() + usize::from(mapped.slave_start),

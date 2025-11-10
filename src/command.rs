@@ -1,3 +1,4 @@
+use core::ops::BitXor;
 use bilge::prelude::*;
 use packbytes::{FromBytes, ToBytes};
 
@@ -16,9 +17,11 @@ pub struct Command {
     /// counte the number of times this command has been executed by consecutive slaves
     pub executed: u8,
     /// address, its value depends on whether accessing a particular slave or the bus virtual memory
-    pub address: u32,
+    pub address: Address,
     /// number of bytes to read/write, following this header
     pub size: u16,
+    /// checksum of data
+    pub checksum: u8,
 }
 
 /// type of memory access
@@ -44,19 +47,15 @@ pack_bilge!(Access);
 
 #[bitsize(32)]
 #[derive(Copy, Clone, FromBits, DebugBits, PartialEq, Default)]
-pub struct SlaveRegister {
+pub struct Address {
     /// slave we are adressing the request to
     pub slave: u16,
     /// register we want to access
     pub register: u16,
 }
-pack_bilge!(SlaveRegister);
+pack_bilge!(Address);
 
-/// checksums for command
-#[derive(Copy, Clone, FromBytes, ToBytes, Debug, Default)]
-pub struct Checksum {
-    /// bitwise xor of the header
-    pub header: u8,
-    /// bitwise xor of the data
-    pub data: u8,
+/// checksum method used for command header and data
+pub fn checksum(slice: &[u8]) -> u8 {
+    slice.iter().cloned().fold(0, BitXor::bitxor)
 }
