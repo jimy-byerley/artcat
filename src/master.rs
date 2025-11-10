@@ -17,7 +17,7 @@ use std::{
 
 use crate::{
     mutex::*,
-    command::*,
+    command::Command,
     registers::{Register, CommandError},
     };
 
@@ -177,9 +177,8 @@ impl Master {
             let (header, data) = {
                 let mut bus = self.receive.lock().await;
                 bus.read_exact(&mut header).await?;
-                debug!("read header {:?}", header);
                 let header = Command::from_be_bytes(header);
-                debug!("header {:?} {:#?}", SlaveRegister::from(header.address), header);
+                debug!("header {:#?}", header);
                 let data = &mut receive[.. usize::from(header.size)];
                 bus.read_exact(data).await?;
                 (header, data)
@@ -191,7 +190,7 @@ impl Master {
                     && buffer.command.access == header.access
                     && (buffer.command.address == header.address 
                         || header.access.topological() 
-                        && SlaveRegister::from(buffer.command.address).register() == SlaveRegister::from(header.address).register())
+                        && buffer.command.address.register() == header.address.register())
                     && buffer.command.size == header.size )
                 {
                     buffer.result = Some(Err(Error::Master("reponse header mismatch")));
@@ -223,14 +222,14 @@ impl Command {
         match address {
             Address::Topological(slave, local) => {
                 command.access.set_topological(true);
-                command.address = SlaveRegister::new(slave, local).into();
+                command.address = command::Address::new(slave, local).into();
             },
             Address::Fixed(slave, local) => {
                 command.access.set_fixed(true);
-                command.address = SlaveRegister::new(slave, local).into();
+                command.address = command::Address::new(slave, local).into();
             },
             Address::Virtual(global) => {
-                command.address = global;
+                command.address = command::Address::from(global);
             },
         }
         command
@@ -266,7 +265,7 @@ impl<'m> Topic<'m> {
         let buffer = pending.get_mut(&self.token).unwrap();
         {
             let mut bus = self.master.transmit.lock().await;
-            debug!("send {:?} {:#?}", SlaveRegister::from(buffer.command.address), buffer.command);
+            debug!("send {:#?}", buffer.command);
             bus.write(&buffer.command.to_be_bytes()).await?;
             bus.write(buffer.buffer).await?;
         }
