@@ -1,6 +1,6 @@
 use thiserror::Error;
 use log::*;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncRead, AsyncWrite};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 // use tokio_serial::{SerialStream, SerialPort, DataBits, Parity, StopBits};
 use serial2_tokio::{SerialPort, CharSize, StopBits, Parity};
 use packbytes::{FromBytes, ToBytes, ByteArray};
@@ -10,14 +10,11 @@ use std::{
     future::poll_fn,
     collections::HashMap,
     mem::transmute,
-    marker::Unpin,
-    boxed::Box,
-    println, dbg,
     };
 
 use crate::{
     mutex::*,
-    command::Command,
+    command::{Command, MAX_COMMAND, checksum, self},
     registers::{Register, CommandError},
     };
 
@@ -102,7 +99,7 @@ type Token = u16;
 // TODO implement loss recovery
 impl Master {
     pub fn new(path: impl AsRef<Path>, rate: u32) -> Result<Self, std::io::Error> {
-        let mut bus1 = SerialPort::open(path, |mut settings: serial2_tokio::Settings| {
+        let bus1 = SerialPort::open(path, |mut settings: serial2_tokio::Settings| {
                 settings.set_raw();
                 settings.set_baud_rate(rate)?;
                 settings.set_char_size(CharSize::Bits8);
@@ -171,18 +168,24 @@ impl Master {
     }
     
     pub async fn run(&self) -> Result<(), std::io::Error> {
-        let mut header = <Command as FromBytes>::Bytes::zeroed();
+        let mut bus = self.receive.try_lock().expect("run function called twice");
         let mut receive = [0u8; MAX_COMMAND];
         loop {
-            let (header, data) = {
-                let mut bus = self.receive.lock().await;
-                bus.read_exact(&mut header).await?;
-                let header = Command::from_be_bytes(header);
-                debug!("header {:#?}", header);
-                let data = &mut receive[.. usize::from(header.size)];
-                bus.read_exact(data).await?;
-                (header, data)
-            };
+            const HEADER: usize = <Command as FromBytes>::Bytes::SIZE;
+            // receive an amount that can be a header and its checksum
+            debug!("waiting header");
+            bus.read_exact(&mut receive[.. HEADER+1]).await?;
+            // loop until checksum is good to catch up new command
+            debug!("catching up header");
+            while checksum(&receive[.. HEADER+1]) != 0 {
+                receive[.. HEADER+1].rotate_left(1);
+                bus.read_exact(&mut receive[HEADER .. HEADER+1]).await?;
+            }
+            let header = Command::from_be_bytes(receive[.. HEADER].try_into().unwrap());
+            
+            debug!("header {:#?}", header);
+            let data = &mut receive[.. usize::from(header.size)];
+            bus.read_exact(data).await?;
             
             let mut pending = self.pending.lock().await;
             if let Some(buffer) = pending.get_mut(&header.token) {
@@ -197,6 +200,9 @@ impl Master {
                 }
                 else if header.access.error() {
                     buffer.result = Some(Err(Error::Slave(CommandError::Unknown)));
+                }
+                else if header.checksum != checksum(data) {
+                    buffer.result = Some(Err(Error::Master("data checksum mismatch")));
                 }
                 else {
                     buffer.buffer.copy_from_slice(data);
@@ -263,10 +269,13 @@ impl<'m> Topic<'m> {
     async fn send(&self) -> Result<(), Error> {
         let mut pending = self.master.pending.lock().await;
         let buffer = pending.get_mut(&self.token).unwrap();
+        buffer.command.checksum = checksum(buffer.buffer);
         {
-            let mut bus = self.master.transmit.lock().await;
+            let bus = self.master.transmit.lock().await;
             debug!("send {:#?}", buffer.command);
-            bus.write(&buffer.command.to_be_bytes()).await?;
+            let header = buffer.command.to_be_bytes();
+            bus.write(&header).await?;
+            bus.write(&checksum(&header).to_be_bytes()).await?;
             bus.write(buffer.buffer).await?;
         }
         Ok(())

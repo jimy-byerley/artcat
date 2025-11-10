@@ -65,15 +65,12 @@ impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
     }
 }
 impl<B: Read + Write> SlaveControl<B> {
-    async fn receive_command<const MEM: usize>(&mut self, slave: &Slave<B, MEM>) -> Result<(), Option<B::Error>> {
+    async fn receive_command<const MEM: usize>(&mut self, slave: &Slave<B, MEM>) -> Result<(), B::Error> {
         let recv_header = self.catch_header().await?;
         let size = usize::from(recv_header.size);
         debug!("receive header {:#?}", recv_header);
         // receive data
         no_eof(self.bus.read_exact(&mut self.receive[..size]).await)?;
-        if checksum(&self.receive[..size]) != recv_header.checksum {
-            return Err(None);
-        }
         // try to process it
         self.send_header = recv_header.clone();
         if let Err(err) = self.process_command(slave, recv_header).await {
@@ -108,7 +105,6 @@ impl<B: Read + Write> SlaveControl<B> {
         if recv_header.access.fixed() && recv_header.access.topological() {
             return Err(registers::CommandError::InvalidCommand);
         }
-        
         // logic for topologial addresses
         if recv_header.access.topological() {
             let slave = recv_header.address.slave();
@@ -119,6 +115,10 @@ impl<B: Read + Write> SlaveControl<B> {
         || recv_header.access.topological() && recv_header.address.slave() == 0 
         {
             debug!("access slave buffer");
+            // check data integrity, only useful if data was expected
+            if recv_header.access.write() && recv_header.checksum != checksum(&self.receive[..size]) {
+                return Ok(());
+            }
             // exchange requested chunk of data
             // mark the command executed
             self.send_header.executed += 1;
@@ -127,6 +127,10 @@ impl<B: Read + Write> SlaveControl<B> {
         // access to bus virtual memory
         else if !recv_header.access.fixed() && !recv_header.access.topological() {
             debug!("access virtual memory");
+            // check data integrity, only useful if data was expected
+            if recv_header.access.write() && recv_header.checksum != checksum(&self.receive[..size]) {
+                return Ok(());
+            }
             // exchange data according to local mapping
             // mark the command executed
             self.send_header.executed += 1;
@@ -156,6 +160,7 @@ impl<B: Read + Write> SlaveControl<B> {
             if header.access.read() {
                 self.on_read(&mut buffer, register);
                 self.send[..size] .copy_from_slice(&buffer[usize::from(register) ..][.. size]);
+                self.send_header.checksum = checksum(&self.send[..size]);
             }
             else {
                 self.send[..size] .copy_from_slice(&self.receive[..size]);
@@ -189,6 +194,7 @@ impl<B: Read + Write> SlaveControl<B> {
                         self.send[dst].copy_from_slice(&buffer[src]);
                     }
                 }
+                self.send_header.checksum = checksum(&self.send[..size]);
             }
             if header.access.write() {
                 for &mapped in &self.mapping[start .. stop] {
