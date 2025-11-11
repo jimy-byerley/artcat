@@ -78,7 +78,9 @@ impl<B: Read + Write> SlaveControl<B> {
             self.send_header.access.set_error(true);
         }
         // transmit anyway
-        self.bus.write(&self.send_header.to_be_bytes()).await?;
+        let header = self.send_header.to_be_bytes();
+        self.bus.write(&header).await?;
+        self.bus.write(&checksum(&header).to_be_bytes()).await?;
         self.bus.write(&self.send[.. size]).await?;
         Ok(())
     }
@@ -88,8 +90,8 @@ impl<B: Read + Write> SlaveControl<B> {
         debug!("waiting header");
         no_eof(self.bus.read_exact(&mut self.receive[.. HEADER+1]).await)?;
         // loop until checksum is good to catch up new command
-        debug!("catching up header");
         while checksum(&self.receive[.. HEADER+1]) != 0 {
+            debug!("catching up header");
             self.receive[.. HEADER+1].rotate_left(1);
             no_eof(self.bus.read_exact(&mut self.receive[HEADER .. HEADER+1]).await)?;
         }

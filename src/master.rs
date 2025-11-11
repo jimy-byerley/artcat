@@ -157,7 +157,6 @@ impl Master {
     
     
     async fn command<'d>(&self, command: Command, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
-        debug!("start command {:#?}", command);
         let topic = Topic::new(self, command, unsafe{ transmute::<&mut [u8], &'static mut [u8]>(data) }).await?;
         topic.send().await?;
         let executed = topic.receive().await?;
@@ -175,11 +174,13 @@ impl Master {
             // receive an amount that can be a header and its checksum
             debug!("waiting header");
             bus.read_exact(&mut receive[.. HEADER+1]).await?;
+            debug!("header bytes {:?} {} {}", &receive[.. HEADER], checksum(&receive[..HEADER]), receive[HEADER]);
             // loop until checksum is good to catch up new command
-            debug!("catching up header");
             while checksum(&receive[.. HEADER+1]) != 0 {
+                debug!("catching up header");
                 receive[.. HEADER+1].rotate_left(1);
                 bus.read_exact(&mut receive[HEADER .. HEADER+1]).await?;
+                debug!("header bytes {:?}", &receive[.. HEADER]);
             }
             let header = Command::from_be_bytes(receive[.. HEADER].try_into().unwrap());
             
@@ -272,8 +273,8 @@ impl<'m> Topic<'m> {
         buffer.command.checksum = checksum(buffer.buffer);
         {
             let bus = self.master.transmit.lock().await;
-            debug!("send {:#?}", buffer.command);
             let header = buffer.command.to_be_bytes();
+            debug!("send {:#?} {:?}", buffer.command, &header);
             bus.write(&header).await?;
             bus.write(&checksum(&header).to_be_bytes()).await?;
             bus.write(buffer.buffer).await?;

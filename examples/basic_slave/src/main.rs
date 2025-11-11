@@ -43,7 +43,7 @@ async fn main(_spawner: Spawner) {
     // initialize slave
     info!("setting up slave");
     let config = esp_hal::uart::Config::default()
-        .with_baudrate(9600)
+        .with_baudrate(2_000_000)
         .with_data_bits(DataBits::_8)
         .with_parity(Parity::Even)
         .with_stop_bits(StopBits::_2)
@@ -62,7 +62,7 @@ async fn main(_spawner: Spawner) {
     let task = async {
         info!("running task");
         loop {
-            Timer::after(Duration::from_millis(200)).await;
+            Timer::after(Duration::from_millis(100)).await;
             let mut buffer = slave.lock().await;
             let count = buffer.get(COUNTER);
             buffer.set(COUNTER, count + 1);
