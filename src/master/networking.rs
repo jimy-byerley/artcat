@@ -1,9 +1,8 @@
-use thiserror::Error;
 use log::*;
+use packbytes::{FromBytes, ToBytes, ByteArray};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 // use tokio_serial::{SerialStream, SerialPort, DataBits, Parity, StopBits};
 use serial2_tokio::{SerialPort, CharSize, StopBits, Parity};
-use packbytes::{FromBytes, ToBytes, ByteArray};
 use std::{
     path::Path,
     task::{Poll, Waker},
@@ -17,57 +16,9 @@ use crate::{
     command::{Command, MAX_COMMAND, checksum, self},
     registers::{Register, CommandError},
     };
+use super::Error;
 
 
-#[derive(Copy, Clone)]
-pub enum Address {
-    Topological(u16, u16),
-    Fixed(u16, u16),
-    Virtual(u32),
-}
-impl Address {
-    pub fn host(self) -> Host {
-        match self {
-            Address::Topological(slave, _) => Host::Topological(slave),
-            Address::Fixed(slave, _) => Host::Fixed(slave),
-            Address::Virtual(_) => Host::Virtual,
-        }
-    }
-}
-
-
-#[derive(Copy, Clone)]
-pub enum Host {
-    Topological(u16),
-    Fixed(u16),
-    Virtual,
-}
-impl Host {
-    pub fn at(self, memory: u32) -> Address {
-        match self {
-            Host::Topological(slave) => Address::Topological(slave, memory.try_into().expect("register address doesn't fit in u16")),
-            Host::Fixed(slave) => Address::Fixed(slave, memory.try_into().expect("register address doesn't fit in u16")),
-            Host::Virtual => Address::Virtual(memory),
-        }
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("problem with uart bus")]
-    Bus(std::io::Error),
-    #[error("problem detected on slave side")]
-    Slave(CommandError),
-    #[error("problem detected on master side")]
-    Master(&'static str),
-}
-impl From<std::io::Error> for Error {
-    fn from(error: std::io::Error) -> Self {
-        Self::Bus(error)
-    }
-}
-
-type ArtcatResult<T> = Result<Answer<T>, Error>;
 
 
 /// artcat master implementation
@@ -96,7 +47,6 @@ type Token = u16;
 
 
 // TODO implement per-command timeout
-// TODO implement loss recovery
 impl Master {
     pub fn new(path: impl AsRef<Path>, rate: u32) -> Result<Self, std::io::Error> {
         let bus1 = SerialPort::open(path, |mut settings: serial2_tokio::Settings| {
@@ -112,57 +62,6 @@ impl Master {
             receive: BusyMutex::from(bus1),
             transmit: BusyMutex::from(bus2),
             pending: BusyMutex::from(HashMap::new()),
-        })
-    }
-}
-impl Master {
-    pub async fn read_bytes<'d>(&self, address: Address, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
-        self.command(Command::new(address, true, false, usize_to_message(data.len())?), data).await
-    }
-    pub async fn write_bytes(&self, address: Address, data: &mut [u8]) -> ArtcatResult<()> {
-        self.command(Command::new(address, false, true, usize_to_message(data.len())?), data).await 
-            .map(|a| Answer {data: (), executed: a.executed})
-    }
-    pub async fn exchange_bytes<'d>(&self, address: Address, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
-        self.command(Command::new(address, true, true, usize_to_message(data.len())?), data).await
-    }
-    
-    pub async fn read<T: FromBytes>(&self, host: Host, register: Register<T>) -> ArtcatResult<T> {
-//         let answers = self.read_bytes(host.at(register.address), T::Bytes::zeroed().as_mut()).await?.answers;
-//             .map(|buffer| T::from_be_bytes(buffer.try_into().unwrap())) )
-        let mut buffer = T::Bytes::zeroed();
-        let executed = self.read_bytes(host.at(register.address), buffer.as_mut()).await?.executed;
-        Ok(Answer{
-            data: T::from_be_bytes(buffer),
-            executed,
-            })
-    }
-    pub async fn write<T: ToBytes>(&self, host: Host, register: Register<T>, value: T) -> ArtcatResult<()> {
-        let executed = self.write_bytes(host.at(register.address), value.to_be_bytes().as_mut()).await?.executed;
-        Ok(Answer{
-            data: (),
-            executed,
-            })
-    }
-    pub async fn exchange<C: ByteArray, T: ToBytes<Bytes=C> + FromBytes<Bytes=C>>(&self, host: Host, register: Register<T>, value: T) -> ArtcatResult<T> {
-//         Ok( self.write_bytes(host.at(register.address), value.to_be_bytes().as_mut()).await
-//             .map(|buffer| T::from_be_bytes(buffer.try_into().unwrap())) )
-        let mut buffer = value.to_be_bytes();
-        let executed = self.write_bytes(host.at(register.address), buffer.as_mut()).await?.executed;
-        Ok(Answer{
-            data: T::from_be_bytes(buffer),
-            executed,
-            })
-    }
-    
-    
-    async fn command<'d>(&self, command: Command, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
-        let topic = Topic::new(self, command, unsafe{ transmute::<&mut [u8], &'static mut [u8]>(data) }).await?;
-        topic.send().await?;
-        let executed = topic.receive().await?;
-        Ok(Answer {
-            data: data,
-            executed,
         })
     }
     
@@ -191,7 +90,9 @@ impl Master {
             let mut pending = self.pending.lock().await;
             if let Some(buffer) = pending.get_mut(&header.token) {
                 if !(  buffer.command.token == header.token
-                    && buffer.command.access == header.access
+                    && buffer.command.access.fixed() == header.access.fixed()
+                    && buffer.command.access.topological() == header.access.topological()
+                    && buffer.command.access.read() == header.access.read()
                     && (buffer.command.address == header.address 
                         || header.access.topological() 
                         && buffer.command.address.register() == header.address.register())
@@ -218,14 +119,39 @@ impl Master {
     }
 }
 
-
-impl Command {
-    fn new(address: Address, read: bool, write: bool, size: u16) -> Self {
-        let mut command = Self::default();
+/// object allowing to send commands and wait and receive responses using master pending buffers
+pub struct Topic<'m> {
+    master: &'m Master,
+    token: Token,
+}
+/// data address on this bus
+#[derive(Copy, Clone)]
+pub enum Address {
+    /// slave topological address (rank in bus, register address)
+    Topological(u16, u16),
+    /// slave fixed address (fixed address, register address)
+    Fixed(u16, u16),
+    /// mapped address in the virtual memory
+    Virtual(u32),
+}
+impl<'m> Topic<'m> {
+    pub async fn new(master: &'m Master, address: Address, read: bool, write: bool, data: &'static mut [u8]) -> Result<Self, Error> {
+        // reserve space in the master for the answer
+        let mut pending = master.pending.lock().await;
+        let token = loop {
+            if let Some(token) = (0 ..= u16::try_from(pending.len()).unwrap()) 
+                .filter(|k| ! pending.contains_key(&k))
+                .next()
+                {break token}
+            };
+        
+        // set that part of the command that is not gonna change
+        let mut command = Command::default();
+        command.token = token;
+        command.size = usize_to_message(data.len())?;
         command.access.set_read(read);
         command.access.set_write(write);
-        command.size = size;
-        command.executed = 0;
+
         match address {
             Address::Topological(slave, local) => {
                 command.access.set_topological(true);
@@ -239,25 +165,7 @@ impl Command {
                 command.address = command::Address::from(global);
             },
         }
-        command
-    }
-}
-
-struct Topic<'m> {
-    master: &'m Master,
-    token: Token,
-}
-impl<'m> Topic<'m> {
-    async fn new(master: &'m Master, command: Command, data: &'static mut [u8]) -> Result<Self, Error> {
-        let mut pending = master.pending.lock().await;
-        let token = loop {
-            if let Some(token) = (0 ..= u16::try_from(pending.len()).unwrap()) 
-                .filter(|k| ! pending.contains_key(&k))
-                .next()
-                {break token}
-            };
-        let mut command = command;
-        command.token = token;
+        
         pending.insert(token, Pending {
             command: command,
             buffer: data,
@@ -267,10 +175,13 @@ impl<'m> Topic<'m> {
         Ok(Self{master, token})
     }
     /// send the current content of the buffer
-    async fn send(&self) -> Result<(), Error> {
+    pub async fn send(&self) -> Result<(), Error> {
         let mut pending = self.master.pending.lock().await;
         let buffer = pending.get_mut(&self.token).unwrap();
+        // update command for new buffer
         buffer.command.checksum = checksum(buffer.buffer);
+        buffer.command.executed = 0;
+        buffer.command.access.set_error(false);
         {
             let bus = self.master.transmit.lock().await;
             let header = buffer.command.to_be_bytes();
@@ -282,7 +193,7 @@ impl<'m> Topic<'m> {
         Ok(())
     }
     /// wait for answer to be ready in the current buffer
-    async fn receive(&self) -> Result<u8, Error> {
+    pub async fn receive(&self) -> Result<u8, Error> {
         poll_fn(|context| {
             if let Some(mut pending) = self.master.pending.try_lock() {
                 let buffer = pending.get_mut(&self.token).unwrap();
@@ -311,32 +222,9 @@ impl Drop for Topic<'_> {
 }
 
 
-/// received data and number of slaves who executed the command
-pub struct Answer<T> {
-    pub data: T,
-    pub executed: u8,
-}
-impl<T> Answer<T> {
-    pub fn any(self) -> Result<T, Error> {
-        if self.executed == 0 
-            {return Err(Error::Master("no slave answered"))}
-        Ok(self.data)
-    }
-    pub fn exact(self, executed: u8) -> Result<T, Error> {
-        if self.executed != executed {
-            if self.executed == 0
-                {return Err(Error::Master("no slave answered"))}
-            else
-                {return Err(Error::Master("incorrect number of answers"))}
-        }
-        Ok(self.data)
-    }
-    pub fn once(self) -> Result<T, Error>  {
-        self.exact(1)
-    }
-}
-
 fn usize_to_message(size: usize) -> Result<u16, Error> {
     if size < MAX_COMMAND  {Ok(size as u16)}
     else {Err(Error::Master("data is longer than maximum allowed message"))}
 }
+
+

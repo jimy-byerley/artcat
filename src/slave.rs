@@ -64,6 +64,38 @@ impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
         }
     }
 }
+
+impl<const MEM: usize> SlaveBuffer<MEM> {
+    /// get the current register's value
+    pub fn get<T: FromBytes>(&self, register: Register<T>) -> T {
+        let mut dst = T::Bytes::zeroed();
+        dst.as_mut().copy_from_slice(&self.buffer[usize::try_from(register.address()).unwrap() ..][.. T::Bytes::SIZE]);
+        T::from_be_bytes(dst)
+    }
+    /// set the given register's value
+    pub fn set<T: ToBytes>(&mut self, register: Register<T>, value: T) {
+        let src = value.to_be_bytes();
+        self.buffer[usize::try_from(register.address()).unwrap() ..][.. T::Bytes::SIZE].copy_from_slice(src.as_ref());
+    }
+    /// set current command error, if not already set
+    fn set_error(&mut self, error: registers::CommandError) {
+        if self.get(registers::ERROR) == registers::CommandError::None {
+            self.set(registers::ERROR, error);
+        }
+    }
+}
+impl<const MEM: usize> Deref for SlaveBuffer<MEM> {
+    type Target = [u8; MEM];
+    fn deref(&self) -> &Self::Target {
+        &self.buffer
+    }
+}
+impl<const MEM: usize> DerefMut for SlaveBuffer<MEM> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.buffer
+    }
+}
+
 impl<B: Read + Write> SlaveControl<B> {
     async fn receive_command<const MEM: usize>(&mut self, slave: &Slave<B, MEM>) -> Result<(), B::Error> {
         let recv_header = self.catch_header().await?;
@@ -216,13 +248,16 @@ impl<B: Read + Write> SlaveControl<B> {
     /// special actions when writing special registers
     fn on_write<const MEM: usize>(&mut self, buffer: &mut SlaveBuffer<MEM>, address: u16) {
         let address = u32::from(address);
-        if address == registers::ADDRESS.address {
+        if address == registers::ADDRESS.address() {
             self.address = buffer.get(registers::ADDRESS);
         }
-        else if address == registers::MAPPING.address {
+        else if address == registers::MAPPING.address() {
             let table = buffer.get(registers::MAPPING);
             self.mapping.clear();
-            self.mapping.extend_from_slice(&table.map[.. usize::from(table.size)]).unwrap();
+            self.mapping.extend(
+                table.map[.. usize::from(table.size)]
+                .iter().cloned().filter(|mapping|  mapping.size != 0)
+                );
             self.mapping.sort_unstable_by_key(|item| item.virtual_start);
             for mapped in &self.mapping {
                 if usize::from(mapped.slave_start + mapped.size) > buffer.len()
@@ -233,37 +268,6 @@ impl<B: Read + Write> SlaveControl<B> {
                 }
             }
         }
-    }
-}
-
-impl<const MEM: usize> SlaveBuffer<MEM> {
-    /// get the current register's value
-    pub fn get<T: FromBytes>(&self, register: Register<T>) -> T {
-        let mut dst = T::Bytes::zeroed();
-        dst.as_mut().copy_from_slice(&self.buffer[usize::try_from(register.address).unwrap() ..][.. T::Bytes::SIZE]);
-        T::from_be_bytes(dst)
-    }
-    /// set the given register's value
-    pub fn set<T: ToBytes>(&mut self, register: Register<T>, value: T) {
-        let src = value.to_be_bytes();
-        self.buffer[usize::try_from(register.address).unwrap() ..][.. T::Bytes::SIZE].copy_from_slice(src.as_ref());
-    }
-    /// set current command error, if not already set
-    fn set_error(&mut self, error: registers::CommandError) {
-        if self.get(registers::ERROR) == registers::CommandError::None {
-            self.set(registers::ERROR, error);
-        }
-    }
-}
-impl<const MEM: usize> Deref for SlaveBuffer<MEM> {
-    type Target = [u8; MEM];
-    fn deref(&self) -> &Self::Target {
-        &self.buffer
-    }
-}
-impl<const MEM: usize> DerefMut for SlaveBuffer<MEM> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.buffer
     }
 }
 

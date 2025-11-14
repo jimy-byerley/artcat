@@ -1,16 +1,20 @@
 use core::marker::PhantomData;
-use packbytes::{FromBytes, ToBytes};
+use packbytes::{FromBytes, ToBytes, ByteArray};
 
 
 #[derive(Copy, Clone, PartialEq, Hash)]
 pub struct Register<T> {
-    pub address: u32,
+    addr: u32,
     ty: PhantomData<T>,
 }
 impl<T> Register<T> {
     pub const fn new(_address: u32) -> Self {
-        Self{address: _address, ty: PhantomData}
+        Self{addr: _address, ty: PhantomData}
     }
+    pub const fn address(&self) -> u32 {self.addr}
+}
+impl<T: FromBytes> Register<T> {
+    pub const fn size(&self) -> u16 {T::Bytes::SIZE as u16}
 }
 
 /// slave fixed address
@@ -39,16 +43,39 @@ pub struct Device {
     /// version of the slave's software
     pub software_version: StringArray,
 }
+
 #[derive(Clone, FromBytes, ToBytes, Debug)]
 pub struct MappingTable {
     pub size: u8,
     pub map: [Mapping; 128],
 }
+
 #[derive(Copy, Clone, Default, FromBytes, ToBytes, Debug)]
 pub struct Mapping {
     pub virtual_start: u32,
     pub slave_start: u16,
     pub size: u16,
+}
+impl Default for MappingTable {
+    fn default() -> Self {
+        Self {
+            size: 0,
+            map: [Default::default(); 128],
+            }
+    }
+}
+impl MappingTable {
+    pub fn from_iter(iterable: impl IntoIterator<Item=Mapping>) -> Result<Self, &'static str> {
+        let mut table = Self::default();
+        for (i, item) in iterable.into_iter().enumerate() {
+            if i >= table.map.len() {
+                return Err("too many items for table");
+            }
+            table.map[i] = item;
+            table.size = u8::try_from(i).unwrap();
+        }
+        Ok(table)
+    }
 }
 
 use bilge::prelude::*;
