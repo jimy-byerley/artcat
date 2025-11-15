@@ -41,20 +41,11 @@ impl<T> Answer<T> {
 
 
 impl Master {
-    pub async fn stream<T>(&self, buffer: Register<T>) -> Stream<'m, T>   {todo!()}
     pub async fn slave(&self, host: Host) -> Slave<'m>   {todo!()}
     
+    pub async fn stream<T>(&self, buffer: Register<T>) -> Stream<'m, T>   {todo!()}
+    pub async fn stream_bytes<T>(&self, address: u32, size: u16) -> StreamBytes<'m>   {todo!()}
     
-    pub async fn read_bytes<'d>(&self, address: u32, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
-        self.command(address, true, false, data).await
-    }
-    pub async fn write_bytes(&self, address: u32, data: &mut [u8]) -> ArtcatResult<()> {
-        self.command(address, false, true, data).await 
-            .map(|a| Answer {data: (), executed: a.executed})
-    }
-    pub async fn exchange_bytes<'d>(&self, address: u32, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
-        self.command(address, true, true, data).await
-    }
     
     pub async fn read<T: FromBytes>(&self, register: Register<T>) -> ArtcatResult<T> {
         let mut buffer = T::Bytes::zeroed();
@@ -64,6 +55,10 @@ impl Master {
             executed,
             })
     }
+    pub async fn read_bytes<'d>(&self, address: u32, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+        self.command(address, true, false, data).await
+    }
+    
     pub async fn write<T: ToBytes>(&self, register: Register<T>, value: T) -> ArtcatResult<()> {
         let executed = self.write_bytes(register.address(), value.to_be_bytes().as_mut()).await?.executed;
         Ok(Answer{
@@ -71,6 +66,11 @@ impl Master {
             executed,
             })
     }
+    pub async fn write_bytes(&self, address: u32, data: &mut [u8]) -> ArtcatResult<()> {
+        self.command(address, false, true, data).await 
+            .map(|a| Answer {data: (), executed: a.executed})
+    }
+    
     pub async fn exchange<C: ByteArray, T: ToBytes<Bytes=C> + FromBytes<Bytes=C>>(&self, register: Register<T>, value: T) -> ArtcatResult<T> {
         let mut buffer = value.to_be_bytes();
         let executed = self.exchange_bytes(register.address(), buffer.as_mut()).await?.executed;
@@ -78,6 +78,9 @@ impl Master {
             data: T::from_be_bytes(buffer),
             executed,
             })
+    }    
+    pub async fn exchange_bytes<'d>(&self, address: u32, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+        self.command(address, true, true, data).await
     }
     
     async fn command<'d>(&self, address: u32, read: bool, write: bool, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
@@ -118,6 +121,7 @@ impl<'m> Slave<'m> {
     }
     
     pub async fn stream<T>(&self, buffer: Register<T>) -> Stream<'m, T>   {todo!()}
+    pub async fn stream_bytes<T>(&self, address: u16, size: u16) -> StreamBytes<'m>   {todo!()}
     
     
     pub async fn read<T: FromBytes>(&self, register: Register<T>) -> ArtcatResult<T> {
@@ -128,6 +132,10 @@ impl<'m> Slave<'m> {
             executed,
             })
     }
+    pub async fn read_bytes<'d>(&self, address: u16, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+        self.command(address, true, false, data).await
+    }
+    
     pub async fn write<T: ToBytes>(&self, register: Register<T>, value: T) -> ArtcatResult<()> {
         let executed = self.write_bytes(value.to_be_bytes().as_mut()).await?.executed;
         Ok(Answer{
@@ -135,6 +143,11 @@ impl<'m> Slave<'m> {
             executed,
             })
     }
+    pub async fn write_bytes(&self, address: u16, data: &mut [u8]) -> ArtcatResult<()> {
+        self.command(address, false, true, data).await 
+            .map(|a| Answer {data: (), executed: a.executed})
+    }
+    
     pub async fn exchange<C: ByteArray, T: ToBytes<Bytes=C> + FromBytes<Bytes=C>>(&self, register: Register<T>, value: T) -> ArtcatResult<T> {
         let mut buffer = value.to_be_bytes();
         let executed = self.exchange_bytes(buffer.as_mut()).await?.executed;
@@ -142,14 +155,6 @@ impl<'m> Slave<'m> {
             data: T::from_be_bytes(buffer),
             executed,
             })
-    }
-    
-    pub async fn read_bytes<'d>(&self, address: u16, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
-        self.command(address, true, false, data).await
-    }
-    pub async fn write_bytes(&self, address: u16, data: &mut [u8]) -> ArtcatResult<()> {
-        self.command(address, false, true, data).await 
-            .map(|a| Answer {data: (), executed: a.executed})
     }
     pub async fn exchange_bytes<'d>(&self, address: u16, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
         self.command(address, true, true, data).await
@@ -205,4 +210,13 @@ impl<'m, T: FromBytes + ToBytes> Stream<'m, T> {
     pub async fn send_exchange(&self, value: T) -> Result<(), Error> {
         self.topic.send(true, true, &value.to_be_bytes()).await
     }
+}
+
+pub struct StreamBytes<'m> {
+    host: Host,
+    address: u32,
+    topic: Topic<'m>,
+}
+impl<'m> StreamBytes {
+    // TODO
 }

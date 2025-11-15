@@ -5,11 +5,12 @@ use std::{
     vec::Vec,
     };
 use crate::registers::{self, Register};
+use super::accessing::Host;
 
 
 #[derive(Clone, Debug)]
 pub struct Mapping {
-    registers: HashMap<u16, Vec<registers::Mapping>>,
+    registers: HashMap<Host, Vec<registers::Mapping>>,
     end: u32,
 }
 impl Mapping {
@@ -29,7 +30,12 @@ impl Mapping {
             ty: PhantomData,
             }
     }
+    pub fn finish(self) -> HashMap<Host, Vec<registers::Mapping>> {
+        self.registers
+    }
 }
+
+
 #[derive(Debug)]
 pub struct BufferMapping<'m, T> {
     start: u32,

@@ -1,8 +1,9 @@
 use std::time::Duration;
 use futures_concurrency::future::Race;
 use artcat::{
-    registers::{Register, Mapping, MappingTable},
+    registers::Register,
     master::{Master, Host, Address},
+    mapping::Mapping,
     };
 
 #[tokio::main]
@@ -36,7 +37,9 @@ async fn main() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         
-        slave.write(artcat::registers::ADDRESS, Host::Fixed(1)).await.unwrap();
+        let address = 1;
+        slave.write(artcat::registers::ADDRESS, address).await.unwrap();
+        let slave = master.slave(Host::Fixed(address));
         for i in 0 .. 10 {
             println!("specific counter register: {}, {:?}", i, master.read(slave, counter).await.unwrap().any().unwrap());
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -48,11 +51,13 @@ async fn main() {
             .register(slave.address(), registers::FORCE)
             .build();
         
+        let previous;
+        let current = MyBuffer::default();
         let mut stream = master.stream(buffer);
-        stream.send_exchange().await?;
+        stream.send_exchange(current).await?;
         loop {
-            let pack = stream.receive().await?;
-            stream.send_exchange(pack).await?;
+            (current, previous) = (stream.receive().await?, current);
+            stream.send_exchange(previous).await?;
             pack.force;
             pack.position;
         }
