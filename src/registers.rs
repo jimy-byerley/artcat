@@ -2,20 +2,30 @@ use core::marker::PhantomData;
 use packbytes::{FromBytes, ToBytes, ByteArray};
 
 
-#[derive(Copy, Clone, PartialEq, Hash)]
-pub struct Register<T> {
-    addr: u32,
+#[derive(PartialEq, Hash)]
+pub struct Register<T, Size=u16> {
+    addr: Size,
     ty: PhantomData<T>,
 }
-impl<T> Register<T> {
-    pub const fn new(_address: u32) -> Self {
-        Self{addr: _address, ty: PhantomData}
+impl<T, Size:Copy> Register<T, Size> {
+    pub const fn new(address: Size) -> Self {
+        Self{addr: address, ty: PhantomData}
     }
-    pub const fn address(&self) -> u32 {self.addr}
+    pub const fn address(&self) -> Size {self.addr}
 }
-impl<T: FromBytes> Register<T> {
+impl<T: FromBytes, S> Register<T, S> {
     pub const fn size(&self) -> u16 {T::Bytes::SIZE as u16}
 }
+impl<T, S:Copy> Clone for Register<T, S> {
+    fn clone(&self) -> Self {
+        Self::new(self.address())
+    }
+}
+
+pub type SlaveRegister<T> = Register<T, u16>;
+pub type VirtualRegister<T> = Register<T, u32>;
+
+
 
 /// slave fixed address
 pub const ADDRESS: Register<u16> = Register::new(0x0);

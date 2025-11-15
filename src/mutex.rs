@@ -31,16 +31,16 @@ impl<T> BusyMutex<T> {
             None => Poll::Pending,
             }).await
     }
-    /// busy wait until lock is acquired
-    #[cfg(feature = "std")]
-    pub fn blocking_lock(&self) -> BusyMutexGuard<'_, T> {
-        loop {
-            if let Some(pending) = BusyMutexGuard::try_new(self) 
-                {break pending}
-            // nothing else to do, leave resources to the kernel
-            std::thread::yield_now();
-        }
-    }
+//     /// busy wait until lock is acquired
+//     #[cfg(feature = "std")]
+//     pub fn blocking_lock(&self) -> BusyMutexGuard<'_, T> {
+//         loop {
+//             if let Some(pending) = BusyMutexGuard::try_new(self) 
+//                 {break pending}
+//             // nothing else to do, leave resources to the kernel
+//             std::thread::yield_now();
+//         }
+//     }
 }
 
 pub struct BusyMutexGuard<'m, T> {

@@ -247,7 +247,6 @@ impl<B: Read + Write> SlaveControl<B> {
     
     /// special actions when writing special registers
     fn on_write<const MEM: usize>(&mut self, buffer: &mut SlaveBuffer<MEM>, address: u16) {
-        let address = u32::from(address);
         if address == registers::ADDRESS.address() {
             self.address = buffer.get(registers::ADDRESS);
         }

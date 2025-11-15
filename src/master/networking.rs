@@ -9,14 +9,16 @@ use std::{
     future::poll_fn,
     collections::HashMap,
     mem::transmute,
+    vec::Vec,
+    ops::{Deref, DerefMut},
     };
 
 use crate::{
     mutex::*,
     command::{Command, MAX_COMMAND, checksum, self},
-    registers::{Register, CommandError},
+    registers::CommandError,
     };
-use super::Error;
+use super::{Error, usize_to_message};
 
 
 
@@ -119,10 +121,13 @@ impl Master {
     }
 }
 
+
 /// object allowing to send commands and wait and receive responses using master pending buffers
 pub struct Topic<'m> {
     master: &'m Master,
     token: Token,
+    #[allow(unused)]  // this field needs to be owned here, despite its ref is being used by Master
+    buffer: PinnedBuffer<'m>,
 }
 /// data address on this bus
 #[derive(Copy, Clone)]
@@ -135,7 +140,7 @@ pub enum Address {
     Virtual(u32),
 }
 impl<'m> Topic<'m> {
-    pub async fn new(master: &'m Master, address: Address, read: bool, write: bool, data: &'static mut [u8]) -> Result<Self, Error> {
+    pub async fn new(master: &'m Master, address: Address, mut buffer: PinnedBuffer<'m>) -> Result<Self, Error> {
         // reserve space in the master for the answer
         let mut pending = master.pending.lock().await;
         let token = loop {
@@ -148,9 +153,7 @@ impl<'m> Topic<'m> {
         // set that part of the command that is not gonna change
         let mut command = Command::default();
         command.token = token;
-        command.size = usize_to_message(data.len())?;
-        command.access.set_read(read);
-        command.access.set_write(write);
+        command.size = usize_to_message(buffer.len())?;
 
         match address {
             Address::Topological(slave, local) => {
@@ -168,20 +171,26 @@ impl<'m> Topic<'m> {
         
         pending.insert(token, Pending {
             command: command,
-            buffer: data,
+            // SAFETY: we will remove this reference when self is dropped, self guarantees that this buffer lives until then
+            buffer: unsafe {transmute::<&mut [u8], &mut [u8]>(buffer.deref_mut())},
             waker: None,
             result: None,
             });
-        Ok(Self{master, token})
+        Ok(Self{master, token, buffer})
     }
     /// send the current content of the buffer
-    pub async fn send(&self) -> Result<(), Error> {
+    pub async fn send(&self, read: bool, write: bool, copy: Option<&[u8]>) -> Result<(), Error> {
         let mut pending = self.master.pending.lock().await;
         let buffer = pending.get_mut(&self.token).unwrap();
+        if let Some(src) = copy {
+            buffer.buffer.copy_from_slice(src);
+        }
         // update command for new buffer
         buffer.command.checksum = checksum(buffer.buffer);
         buffer.command.executed = 0;
         buffer.command.access.set_error(false);
+        buffer.command.access.set_read(read);
+        buffer.command.access.set_write(write);
         {
             let bus = self.master.transmit.lock().await;
             let header = buffer.command.to_be_bytes();
@@ -193,11 +202,14 @@ impl<'m> Topic<'m> {
         Ok(())
     }
     /// wait for answer to be ready in the current buffer
-    pub async fn receive(&self) -> Result<u8, Error> {
+    pub async fn receive(&self, mut copy: Option<&mut [u8]>) -> Result<u8, Error> {
         poll_fn(|context| {
             if let Some(mut pending) = self.master.pending.try_lock() {
                 let buffer = pending.get_mut(&self.token).unwrap();
                 if let Some(result) = buffer.result.take() {
+                    if let Some(dst) = copy.take() {
+                        dst.copy_from_slice(buffer.buffer);
+                    }
                     return Poll::Ready(result)
                 }
                 buffer.waker.replace(context.waker().clone());
@@ -222,9 +234,27 @@ impl Drop for Topic<'_> {
 }
 
 
-fn usize_to_message(size: usize) -> Result<u16, Error> {
-    if size < MAX_COMMAND  {Ok(size as u16)}
-    else {Err(Error::Master("data is longer than maximum allowed message"))}
+
+pub enum PinnedBuffer<'s> {
+    Borrowed(&'s mut [u8]),
+    Owned(Vec<u8>),
+}
+impl Deref for PinnedBuffer<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(slice) => slice,
+            Self::Owned(vec) => vec.deref(),
+        }
+    }
+}
+impl DerefMut for PinnedBuffer<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Borrowed(slice) => slice,
+            Self::Owned(vec) => vec.deref_mut(),
+        }
+    }
 }
 
 
