@@ -9,6 +9,7 @@ use super::accessing::Host;
 use super::{Error, usize_to_message};
 
 
+/// helper to build a global config of slaves mappings to the common virtual memory. it follows the builder pattern
 #[derive(Clone, Debug)]
 pub struct Mapping {
     registers: HashMap<Host, Vec<registers::Mapping>>,
@@ -37,7 +38,7 @@ impl Mapping {
     }
 }
 
-
+/// helper to map multiple slave registers into a packed struct in the virtual memory. it follows the builder pattern
 #[derive(Debug)]
 pub struct BufferMapping<'m, T> {
     start: u32,

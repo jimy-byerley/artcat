@@ -1,3 +1,20 @@
+/*!
+    implement a asynchronous artcat master in `std` environment.
+    
+    The central resource is the [Master] struct which implements all bus buffering and exchanges. 
+    
+    
+    access to different memories:
+    
+    - methods at [Master] level are addressing the virtual memory
+    - For communicating with specific slaves and address their memory, use the [Slave] struct which is a lighweight reference to [Master]
+    
+    memory access style
+    
+    - for one-shot access to the different memories, use the methods directly accessible in [Master] and [Slave]
+    - for more customized or repeated access sequences, use the [Stream] and [StreamBytes] provided by [Master] and [Slave]
+*/
+
 /// implementation of the bus exchanges, this is the tricky part of the code
 mod networking;
 /// convenient methods to read/write/exchange data on the bus
@@ -17,6 +34,7 @@ use crate::{
     };
 use thiserror::Error;
 
+/// error regarding artcat communication
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("problem with uart bus")]

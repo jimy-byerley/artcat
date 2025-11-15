@@ -1,3 +1,6 @@
+/*!
+    implement a asynchronous artcat slave in a ` no-std`  and ` no-alloc` environment.
+*/
 use core::ops::{Deref, DerefMut, Range};
 use packbytes::{FromBytes, ToBytes, ByteArray};
 use embedded_io_async::{Read, Write, ReadExactError};
@@ -6,15 +9,21 @@ use log::*;
 use crate::{
     mutex::*,
     command::*,
-    registers::{Register, self},
+    registers::{SlaveRegister, self},
     };
 
 
-
+/**
+    artcat slave async implementation for bare-metal `no-std` and `no-alloc` environment
+    
+    A slave owns a local data buffer of `MEM` bytes, that is shared between bus coroutine and user task using a sync mutex.
+    This buffer stores communication config of the slave as well as user data the slave wants to share with the master
+*/
 pub struct Slave<B, const MEM: usize> {
     buffer: BusyMutex<SlaveBuffer<MEM>>,
     control: BusyMutex<SlaveControl<B>>,
 }
+/// buffer of `MEM` bytes data shared between slave tasks an the bus communication
 pub struct SlaveBuffer<const MEM: usize> {
     buffer: [u8; MEM],
 }
@@ -27,8 +36,8 @@ struct SlaveControl<B> {
     send_header: Command,
 }
 
-// TODO implement loss recovery
 impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
+    /// initialize the slave on the given UART bus, with the given slave identification infos
     pub fn new(bus: B, device: registers::Device) -> Self {
         let mut buffer = SlaveBuffer {buffer: [0; MEM]};
         buffer.set(registers::VERSION, 1);
@@ -49,9 +58,17 @@ impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
         };
         new
     }
+    
+    /// wait until getting access to the slave's buffer
     pub async fn lock(&self) -> BusyMutexGuard<'_, SlaveBuffer<MEM>> {self.buffer.lock().await}
+    /// try to get access to the slave's buffer, immediately abort if the buffer is being used by other tasks
     pub fn try_lock(&self) -> Option<BusyMutexGuard<'_, SlaveBuffer<MEM>>> {self.buffer.try_lock()}
     
+    /** 
+        coroutine reacting to artcat commands received on the bus. it is responsible of all communications with the master.
+        
+        It **must** run in order to communicate with the master
+    */
     pub async fn run(&self) {
         let Some(mut control) = self.control.try_lock() 
             else {return};
@@ -67,13 +84,13 @@ impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
 
 impl<const MEM: usize> SlaveBuffer<MEM> {
     /// get the current register's value
-    pub fn get<T: FromBytes>(&self, register: Register<T>) -> T {
+    pub fn get<T: FromBytes>(&self, register: SlaveRegister<T>) -> T {
         let mut dst = T::Bytes::zeroed();
         dst.as_mut().copy_from_slice(&self.buffer[usize::try_from(register.address()).unwrap() ..][.. T::Bytes::SIZE]);
         T::from_be_bytes(dst)
     }
     /// set the given register's value
-    pub fn set<T: ToBytes>(&mut self, register: Register<T>, value: T) {
+    pub fn set<T: ToBytes>(&mut self, register: SlaveRegister<T>, value: T) {
         let src = value.to_be_bytes();
         self.buffer[usize::try_from(register.address()).unwrap() ..][.. T::Bytes::SIZE].copy_from_slice(src.as_ref());
     }
@@ -97,6 +114,7 @@ impl<const MEM: usize> DerefMut for SlaveBuffer<MEM> {
 }
 
 impl<B: Read + Write> SlaveControl<B> {
+    /// process one command on the bus, block until a command is found and executed
     async fn receive_command<const MEM: usize>(&mut self, slave: &Slave<B, MEM>) -> Result<(), B::Error> {
         let recv_header = self.catch_header().await?;
         let size = usize::from(recv_header.size);
@@ -116,6 +134,7 @@ impl<B: Read + Write> SlaveControl<B> {
         self.bus.write(&self.send[.. size]).await?;
         Ok(())
     }
+    /// wait until a command header is found
     async fn catch_header(&mut self) -> Result<Command, B::Error> {
         const HEADER: usize = <Command as FromBytes>::Bytes::SIZE;
         // receive an amount that can be a header and its checksum
@@ -129,6 +148,7 @@ impl<B: Read + Write> SlaveControl<B> {
         }
         Ok(Command::from_be_bytes(self.receive[.. HEADER].try_into().unwrap()))
     }
+    /// execute a given command is this slaved is concerned
     async fn process_command<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, recv_header: Command) -> Result<(), registers::CommandError> {
         let size = usize::from(recv_header.size);
         

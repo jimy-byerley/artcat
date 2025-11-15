@@ -19,8 +19,8 @@ use esp_println as _;
 use log::*;
 
 use artcat::{
-    registers::*, 
-    slave::Slave,
+    registers::SlaveRegister, 
+    slave::*,
     };
 
 
@@ -39,7 +39,7 @@ async fn main(_spawner: Spawner) {
     
     // declare some application-specific registers
     const MEMORY: usize = 0x304;
-    const COUNTER: Register<u32> = Register::new(0x300);
+    const COUNTER: SlaveRegister<u32> = Register::new(0x300);
     // initialize slave
     info!("setting up slave");
     let config = esp_hal::uart::Config::default()

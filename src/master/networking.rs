@@ -23,7 +23,11 @@ use super::{Error, usize_to_message};
 
 
 
-/// artcat master implementation
+/** 
+    artcat master async implementation
+    
+    all methods here are addressing the virtual memory which is shared by all slaves
+*/
 pub struct Master {
     /// uart RX/TX stream
     receive: BusyMutex<SerialPort>,

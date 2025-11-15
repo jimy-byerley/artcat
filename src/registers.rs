@@ -1,17 +1,34 @@
+/*!
+    define standard arcat registers
+    
+    each standard is described by a serializable data type and a constant of type [SlaveRegister] defining its standard position in slaves' memory.
+*/
+
 use core::marker::PhantomData;
 use packbytes::{FromBytes, ToBytes, ByteArray};
+use bilge::prelude::*;
+use crate::pack_enum;
 
 
+/**
+    a register is a type-aware pointer in bus memory. 
+    
+    it only hols the memory address of the starting byte of the referened value, hence can be created, copied or destroyed at no cost
+    
+    depending on the target memory, address size can vary. See [SlaveRegister]  and [VirtualRegister]
+*/
 #[derive(PartialEq, Hash)]
-pub struct Register<T, Size=u16> {
-    addr: Size,
+pub struct Register<T, A> {
+    addr: A,
     ty: PhantomData<T>,
 }
-impl<T, Size:Copy> Register<T, Size> {
-    pub const fn new(address: Size) -> Self {
+impl<T, A:Copy> Register<T, A> {
+    /// create a register from its starting byte
+    pub const fn new(address: A) -> Self {
         Self{addr: address, ty: PhantomData}
     }
-    pub const fn address(&self) -> Size {self.addr}
+    /// starting byte in memory
+    pub const fn address(&self) -> A {self.addr}
 }
 impl<T: FromBytes, S> Register<T, S> {
     pub const fn size(&self) -> u16 {T::Bytes::SIZE as u16}
@@ -21,26 +38,29 @@ impl<T, S:Copy> Clone for Register<T, S> {
         Self::new(self.address())
     }
 }
+impl<T, A:Copy> Copy for Register<T, A> {}
 
+/// register in slave's memory, which is using 16bit addresses
 pub type SlaveRegister<T> = Register<T, u16>;
+/// register in virtual memory, which is using 32bit addresses
 pub type VirtualRegister<T> = Register<T, u32>;
 
 
 
 /// slave fixed address
-pub const ADDRESS: Register<u16> = Register::new(0x0);
+pub const ADDRESS: SlaveRegister<u16> = Register::new(0x0);
 /// first communication error raise by slave, write to 0 to reset
-pub const ERROR: Register<CommandError> = Register::new(0x2);
+pub const ERROR: SlaveRegister<CommandError> = Register::new(0x2);
 /// count the number of loss sequences detected since last reset, write to 0 to reset
-pub const LOSS: Register<u16> = Register::new(0x3);
+pub const LOSS: SlaveRegister<u16> = Register::new(0x3);
 /// protocol version
-pub const VERSION: Register<u8> = Register::new(0x5);
+pub const VERSION: SlaveRegister<u8> = Register::new(0x5);
 /// slave standard informations
-pub const DEVICE: Register::<Device> = Register::new(0x20);
+pub const DEVICE: SlaveRegister<Device> = Register::new(0x20);
 /// slave clock value when reading
-pub const CLOCK: Register::<u64> = Register::new(0x100);
+pub const CLOCK: SlaveRegister<u64> = Register::new(0x100);
 /// mapping between registers and virtual memory
-pub const MAPPING: Register::<MappingTable> = Register::new(0x200);
+pub const MAPPING: SlaveRegister<MappingTable> = Register::new(0x200);
 
 
 /// slave standard informations
@@ -53,13 +73,13 @@ pub struct Device {
     /// version of the slave's software
     pub software_version: StringArray,
 }
-
+/// slave config for mapping between slave and virtual memory
 #[derive(Clone, FromBytes, ToBytes, Debug)]
 pub struct MappingTable {
     pub size: u8,
     pub map: [Mapping; 128],
 }
-
+/// setting for mapping a range of memory between slave and virtual memory
 #[derive(Copy, Clone, Default, FromBytes, ToBytes, Debug)]
 pub struct Mapping {
     pub virtual_start: u32,
@@ -88,8 +108,7 @@ impl MappingTable {
     }
 }
 
-use bilge::prelude::*;
-use crate::pack_enum;
+/// error code set after an refused command
 #[bitsize(8)]
 #[derive(Copy, Clone, Default, FromBits, Debug, PartialEq)]
 pub enum CommandError {
@@ -109,7 +128,7 @@ pub enum CommandError {
 }
 pack_enum!(CommandError);
 
-
+/// register format for strings
 #[derive(Clone, Debug, Default, FromBytes, ToBytes)]
 pub struct StringArray {
     pub size: u16,
