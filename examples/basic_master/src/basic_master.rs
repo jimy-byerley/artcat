@@ -12,13 +12,11 @@ async fn main() {
 
     // initialize a master on some uart port
     println!("creating master");
-    // 4_147_200
-    // 921_600
-    // 1_792_000
-    // 1_843_200
-    // 3_584_000
+    // 115_200
+    // 1_000_000
+    // 1_500_000
     // 2_000_000
-    let master = Master::new("/dev/ttyUSB1", 2_000_000).unwrap();
+    let master = Master::new("/dev/ttyUSB1", 1_500_000).unwrap();
     
     let task = async {
         println!("running task");
