@@ -1,6 +1,6 @@
 use std::vec::Vec;
 use packbytes::{FromBytes, ToBytes, ByteArray};
-use crate::registers::{Register, SlaveRegister, VirtualRegister};
+use crate::registers::{Register, SlaveRegister, VirtualRegister, SlaveSize, VirtualSize};
 use super::{
     Error,
     networking::{Master, Topic, Address, PinnedBuffer},
@@ -46,7 +46,7 @@ impl Master {
     pub fn slave(&self, host: Host) -> Slave<'_>   {Slave{master: self, host}}
     
     pub async fn stream<T: FromBytes + ToBytes>(&self, buffer: VirtualRegister<T>) -> Result<Stream<'_, T>, Error> {
-        Stream::<T, u32>::new(self, buffer).await
+        Stream::<T, VirtualSize>::new(self, buffer).await
     }
     pub async fn read<T: FromBytes>(&self, register: VirtualRegister<T>) -> ArtcatResult<T> {
         let mut buffer = T::Bytes::zeroed();
@@ -76,19 +76,19 @@ impl Master {
             })
     }
     
-    pub async fn stream_bytes(&self, _address: u32, _size: u16) -> StreamBytes<'_>   {todo!()}
-    pub async fn read_bytes<'d>(&self, address: u32, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+    pub async fn stream_bytes(&self, _address: VirtualSize, _size: SlaveSize) -> StreamBytes<'_>   {todo!()}
+    pub async fn read_bytes<'d>(&self, address: VirtualSize, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
         self.command(address, true, false, data).await
     }
-    pub async fn write_bytes(&self, address: u32, data: &mut [u8]) -> ArtcatResult<()> {
+    pub async fn write_bytes(&self, address: VirtualSize, data: &mut [u8]) -> ArtcatResult<()> {
         self.command(address, false, true, data).await 
             .map(|a| Answer {data: (), executed: a.executed})
     }
-    pub async fn exchange_bytes<'d>(&self, address: u32, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+    pub async fn exchange_bytes<'d>(&self, address: VirtualSize, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
         self.command(address, true, true, data).await
     }
     
-    async fn command<'d>(&self, address: u32, read: bool, write: bool, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+    async fn command<'d>(&self, address: VirtualSize, read: bool, write: bool, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
         let executed = {
             let topic = Topic::new(
                 self, 
@@ -114,11 +114,11 @@ pub struct Slave<'m> {
 /// address of a slave on the bus
 #[derive(Copy, Clone, Eq, Hash, PartialEq, Debug)]
 pub enum Host {
-    Topological(u16),
-    Fixed(u16),
+    Topological(SlaveSize),
+    Fixed(SlaveSize),
 }
 impl Host {
-    pub fn at(self, memory: u16) -> Address {
+    pub fn at(self, memory: SlaveSize) -> Address {
         match self {
             Host::Topological(slave) => Address::Topological(slave, memory),
             Host::Fixed(slave) => Address::Fixed(slave, memory),
@@ -129,9 +129,12 @@ impl<'m> Slave<'m> {
     pub fn new(master: &'m Master, host: Host) -> Self {
         Self {master, host}
     }
+    pub fn address(&self) -> Host {
+        self.host
+    }
     
-    pub async fn stream<T: FromBytes + ToBytes>(&self, buffer: SlaveRegister<T>) -> Result<Stream<'m, T, u16>, Error> {
-        Stream::<T, u16>::new(self.master, self.host, buffer).await
+    pub async fn stream<T: FromBytes + ToBytes>(&self, buffer: SlaveRegister<T>) -> Result<Stream<'m, T, SlaveSize>, Error> {
+        Stream::<T, SlaveSize>::new(self.master, self.host, buffer).await
     }
     pub async fn read<T: FromBytes>(&self, register: SlaveRegister<T>) -> ArtcatResult<T> {
         let mut buffer = T::Bytes::zeroed();
@@ -158,20 +161,20 @@ impl<'m> Slave<'m> {
             })
     }
     
-    pub async fn read_bytes<'d>(&self, address: u16, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+    pub async fn read_bytes<'d>(&self, address: SlaveSize, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
         self.command(address, true, false, data).await
     }
-    pub async fn write_bytes(&self, address: u16, data: &mut [u8]) -> ArtcatResult<()> {
+    pub async fn write_bytes(&self, address: SlaveSize, data: &mut [u8]) -> ArtcatResult<()> {
         self.command(address, false, true, data).await 
             .map(|a| Answer {data: (), executed: a.executed})
     }
-    pub async fn exchange_bytes<'d>(&self, address: u16, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+    pub async fn exchange_bytes<'d>(&self, address: SlaveSize, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
         self.command(address, true, true, data).await
     }
-    pub async fn stream_bytes(&self, _address: u16, _size: u16) -> StreamBytes<'m>   {todo!()}
+    pub async fn stream_bytes(&self, _address: SlaveSize, _size: SlaveSize) -> StreamBytes<'m>   {todo!()}
     
     
-    async fn command<'d>(&self, address: u16, read: bool, write: bool, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+    async fn command<'d>(&self, address: SlaveSize, read: bool, write: bool, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
         let executed = {
             let topic = Topic::new(
                 self.master, 
@@ -193,11 +196,11 @@ impl<'m> Slave<'m> {
     It basically reserve a topic token on the bus, and allows repeated sending/receval using the same topic and memory area.
     The consequence is that any answer concerning that topic and region are received indistinctly. It allows custom exchange sequences, like artcat commands without waiting for answers, and receving answers in a separate coroutine.
 */
-pub struct Stream<'m, T, A=u32> {
+pub struct Stream<'m, T, A=VirtualSize> {
     register: Register<T,A>,
     topic: Topic<'m>,
 }
-impl<'m, T> Stream<'m, T, u16>
+impl<'m, T> Stream<'m, T, SlaveSize>
 where T: FromBytes {
     pub async fn new(master: &'m Master, host: Host, register: SlaveRegister<T>) -> Result<Self, Error> {
         Ok(Self {
@@ -210,7 +213,7 @@ where T: FromBytes {
             })
     }
 }
-impl<'m, T> Stream<'m, T, u32> 
+impl<'m, T> Stream<'m, T, VirtualSize> 
 where T: FromBytes {
     pub async fn new(master: &'m Master, register: VirtualRegister<T>) -> Result<Self, Error> {
         Ok(Self {
@@ -258,7 +261,7 @@ where T: ToBytes
 #[allow(unused)]
 pub struct StreamBytes<'m> {
     host: Host,
-    address: u32,
+    address: VirtualSize,
     topic: Topic<'m>,
 }
 impl<'m> StreamBytes<'m> {

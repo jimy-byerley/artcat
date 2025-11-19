@@ -1,3 +1,4 @@
+use log::*;
 use packbytes::{FromBytes, ByteArray};
 use std::{
     marker::PhantomData,
@@ -5,20 +6,20 @@ use std::{
     vec::Vec,
     };
 use crate::registers::{self, SlaveRegister, VirtualRegister};
-use super::accessing::Host;
+use super::accessing::{Host, Slave};
 use super::{Error, usize_to_message};
 
 
 /// helper to build a global config of slaves mappings to the common virtual memory. it follows the builder pattern
 #[derive(Clone, Debug)]
 pub struct Mapping {
-    registers: HashMap<Host, Vec<registers::Mapping>>,
+    map: HashMap<Host, Vec<registers::Mapping>>,
     end: u32,
 }
 impl Mapping {
     pub fn new() -> Self {
         Self {
-            registers: HashMap::new(),
+            map: HashMap::new(),
             end: 0,
         }
     }
@@ -28,13 +29,26 @@ impl Mapping {
             .ok_or(Error::Master("no more virtual memory available"))?;
         Ok(BufferMapping {
             start,
-            end: self.end,
+            end: start,
             mapping: self,
             ty: PhantomData,
             })
     }
-    pub fn finish(self) -> HashMap<Host, Vec<registers::Mapping>> {
-        self.registers
+    pub fn map(&self) -> &HashMap<Host, Vec<registers::Mapping>> {
+        &self.map
+    }
+    pub async fn configure(&self, slave: &Slave<'_>) -> Result<(), Error> {
+        let mut mapping = registers::MappingTable::default();
+        if let Some(table) = self.map.get(&slave.address()) {
+            if table.len() > mapping.map.len() {
+                return Err(Error::Master("too many items in mapping table"));
+            }
+            mapping.size = u8::try_from(table.len()).unwrap();
+            for (i, item) in table.iter().enumerate() {
+                mapping.map[i] = *item;
+            }
+        }
+        slave.write(registers::MAPPING, mapping).await?.once()
     }
 }
 
@@ -54,10 +68,10 @@ impl<T: FromBytes> BufferMapping<'_, T> {
     pub fn register<R: FromBytes>(mut self, slave: Host, register: SlaveRegister<R>) -> Self {
         let start = self.end;
         self.end += u32::from(register.size());
+        debug!("mapping {:?} {:#x} {}    {}", slave, register.address(), register.size(), self.end - self.start);
         assert!(self.end <= self.start + T::Bytes::SIZE as u32, "mapping set is bigger than packed type");
-        self.mapping.registers.entry(slave)
-            .or_insert_with(Vec::new)
-            .push(registers::Mapping {
+        let table = self.mapping.map.entry(slave).or_insert_with(Vec::new);
+        table.push(registers::Mapping {
                 slave_start: register.address(), 
                 virtual_start: start,
                 size: register.size(),

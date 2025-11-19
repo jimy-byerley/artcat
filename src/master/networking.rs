@@ -11,12 +11,13 @@ use std::{
     mem::transmute,
     vec::Vec,
     ops::{Deref, DerefMut},
+    time::{Duration, Instant},
     };
 
 use crate::{
     mutex::*,
     command::{Command, MAX_COMMAND, checksum, self},
-    registers::CommandError,
+    registers::{CommandError, SlaveSize, VirtualSize},
     };
 use super::{Error, usize_to_message};
 
@@ -34,6 +35,7 @@ pub struct Master {
     transmit: BusyMutex<SerialPort>,
     /// command answers currently waited for
     pending: BusyMutex<HashMap<Token, Pending>>,
+    timeout: Duration,
     
     // TODO reimplement pending with an atomic queue
 }
@@ -54,12 +56,13 @@ type Token = u16;
 
 // TODO implement per-command timeout
 impl Master {
+    /// initialize a master on the given serial port file and with the given baud rate
     pub fn new(path: impl AsRef<Path>, rate: u32) -> Result<Self, std::io::Error> {
         let bus1 = SerialPort::open(path, |mut settings: serial2_tokio::Settings| {
                 settings.set_raw();
                 settings.set_baud_rate(rate)?;
                 settings.set_char_size(CharSize::Bits8);
-                settings.set_stop_bits(StopBits::Two);
+                settings.set_stop_bits(StopBits::One);
                 settings.set_parity(Parity::Even);
                 Ok(settings)
                 })?;
@@ -68,9 +71,15 @@ impl Master {
             receive: BusyMutex::from(bus1),
             transmit: BusyMutex::from(bus2),
             pending: BusyMutex::from(HashMap::new()),
+            timeout: Duration::from_millis(100),
         })
     }
     
+    /**
+        coroutine responsible of receving all responses from the bus
+        
+        it **must** be running in order to receive answers
+    */
     pub async fn run(&self) -> Result<(), std::io::Error> {
         let mut bus = self.receive.try_lock().expect("run function called twice");
         let mut receive = [0u8; MAX_COMMAND];
@@ -89,9 +98,10 @@ impl Master {
             }
             let header = Command::from_be_bytes(receive[.. HEADER].try_into().unwrap());
             
-            debug!("header {:#?}", header);
+            debug!("received header {:#?}", header);
             let data = &mut receive[.. usize::from(header.size)];
             bus.read_exact(data).await?;
+            debug!("processing");
             
             let mut pending = self.pending.lock().await;
             if let Some(buffer) = pending.get_mut(&header.token) {
@@ -137,11 +147,11 @@ pub struct Topic<'m> {
 #[derive(Copy, Clone)]
 pub enum Address {
     /// slave topological address (rank in bus, register address)
-    Topological(u16, u16),
+    Topological(u16, SlaveSize),
     /// slave fixed address (fixed address, register address)
-    Fixed(u16, u16),
+    Fixed(u16, SlaveSize),
     /// mapped address in the virtual memory
-    Virtual(u32),
+    Virtual(VirtualSize),
 }
 impl<'m> Topic<'m> {
     pub async fn new(master: &'m Master, address: Address, mut buffer: PinnedBuffer<'m>) -> Result<Self, Error> {
@@ -207,7 +217,7 @@ impl<'m> Topic<'m> {
     }
     /// wait for answer to be ready in the current buffer
     pub async fn receive(&self, mut copy: Option<&mut [u8]>) -> Result<u8, Error> {
-        poll_fn(|context| {
+        let polling = poll_fn(|context| {
             if let Some(mut pending) = self.master.pending.try_lock() {
                 let buffer = pending.get_mut(&self.token).unwrap();
                 if let Some(result) = buffer.result.take() {
@@ -221,7 +231,9 @@ impl<'m> Topic<'m> {
             // TODO check wether it is ok to return pending without changing waker in the pending task
             // nothing else to do, leave resources to the runtime
             Poll::Pending
-        }).await
+        });
+        tokio::time::timeout(self.master.timeout, polling).await
+            .map_err(|_| Error::Timeout)?
     }
 }
 impl Drop for Topic<'_> {

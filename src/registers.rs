@@ -11,7 +11,7 @@ use crate::pack_enum;
 
 
 /**
-    a register is a type-aware pointer in bus memory. 
+    a register is a typed pointer in bus memory. 
     
     it only hols the memory address of the starting byte of the referened value, hence can be created, copied or destroyed at no cost
     
@@ -30,25 +30,31 @@ impl<T, A:Copy> Register<T, A> {
     /// starting byte in memory
     pub const fn address(&self) -> A {self.addr}
 }
-impl<T: FromBytes, S> Register<T, S> {
-    pub const fn size(&self) -> u16 {T::Bytes::SIZE as u16}
+impl<T: FromBytes, A> Register<T, A> {
+    pub const fn size(&self) -> SlaveSize {T::Bytes::SIZE as SlaveSize}
 }
-impl<T, S:Copy> Clone for Register<T, S> {
+impl<T, A:Copy> Clone for Register<T, A> {
     fn clone(&self) -> Self {
         Self::new(self.address())
     }
 }
 impl<T, A:Copy> Copy for Register<T, A> {}
 
+
+/// integer used for addressing slave memory
+pub type SlaveSize = u16;
+/// integer used for addressing virtual memory
+pub type VirtualSize = u32;
+
 /// register in slave's memory, which is using 16bit addresses
-pub type SlaveRegister<T> = Register<T, u16>;
+pub type SlaveRegister<T> = Register<T, SlaveSize>;
 /// register in virtual memory, which is using 32bit addresses
-pub type VirtualRegister<T> = Register<T, u32>;
+pub type VirtualRegister<T> = Register<T, VirtualSize>;
 
 
 
 /// slave fixed address
-pub const ADDRESS: SlaveRegister<u16> = Register::new(0x0);
+pub const ADDRESS: SlaveRegister<SlaveSize> = Register::new(0x0);
 /// first communication error raise by slave, write to 0 to reset
 pub const ERROR: SlaveRegister<CommandError> = Register::new(0x2);
 /// count the number of loss sequences detected since last reset, write to 0 to reset
@@ -58,9 +64,12 @@ pub const VERSION: SlaveRegister<u8> = Register::new(0x5);
 /// slave standard informations
 pub const DEVICE: SlaveRegister<Device> = Register::new(0x20);
 /// slave clock value when reading
-pub const CLOCK: SlaveRegister<u64> = Register::new(0x100);
+pub const CLOCK: SlaveRegister<u64> = Register::new(0x66);
 /// mapping between registers and virtual memory
-pub const MAPPING: SlaveRegister<MappingTable> = Register::new(0x200);
+pub const MAPPING: SlaveRegister<MappingTable> = Register::new(0xff);
+
+/// end of standard mendatory section of slave buffer
+pub const USER: usize = 0x500;
 
 
 /// slave standard informations
@@ -121,10 +130,12 @@ pub enum CommandError {
     InvalidCommand = 1,
     /// requested read/write is not allowed for given register
     InvalidAccess = 2,
+    /// data size is too big for slave
+    InvalidSize = 3,
     /// requested register doesn't exist
-    InvalidRegister = 3,
+    InvalidRegister = 4,
     /// register set in mapping doesn't exist
-    InvalidMapping = 4,
+    InvalidMapping = 5,
 }
 pack_enum!(CommandError);
 

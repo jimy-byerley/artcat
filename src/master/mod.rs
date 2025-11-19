@@ -43,6 +43,8 @@ pub enum Error {
     Slave(CommandError),
     #[error("problem detected on master side")]
     Master(&'static str),
+    #[error("no data arrived in expected time")]
+    Timeout,
 }
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {

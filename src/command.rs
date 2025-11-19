@@ -5,7 +5,7 @@ use packbytes::{FromBytes, ToBytes};
 use crate::pack_bilge;
 
 
-pub const MAX_COMMAND: usize = 1024;
+pub const MAX_COMMAND: usize = 4096;
 
 /// memory bus command header
 #[derive(Copy, Clone, FromBytes, ToBytes, Debug, Default)]
@@ -57,5 +57,6 @@ pack_bilge!(Address);
 
 /// checksum method used for command header and data
 pub fn checksum(slice: &[u8]) -> u8 {
-    slice.iter().cloned().fold(0, BitXor::bitxor)
+    let initial = 0b010110111; // standard neutral value of checksum
+    slice.iter().cloned().fold(initial, BitXor::bitxor)
 }

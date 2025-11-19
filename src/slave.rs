@@ -36,6 +36,7 @@ struct SlaveControl<B> {
     send_header: Command,
 }
 
+// TODO: implement separated TX and RX
 impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
     /// initialize the slave on the given UART bus, with the given slave identification infos
     pub fn new(bus: B, device: registers::Device) -> Self {
@@ -73,7 +74,9 @@ impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
         let Some(mut control) = self.control.try_lock() 
             else {return};
         loop {
-            if control.receive_command(self).await.is_err() {
+//             if control.receive_command(self).await.is_err() {
+            if let Err(err) = control.receive_command(self).await {
+                warn!("artcat error {:?}", err);
                 let mut buffer = self.lock().await;
                 let count = buffer.get(registers::LOSS);
                 buffer.set(registers::LOSS, count.saturating_add(1));
@@ -118,7 +121,9 @@ impl<B: Read + Write> SlaveControl<B> {
     async fn receive_command<const MEM: usize>(&mut self, slave: &Slave<B, MEM>) -> Result<(), B::Error> {
         let recv_header = self.catch_header().await?;
         let size = usize::from(recv_header.size);
-        debug!("receive header {:#?}", recv_header);
+        if size > MAX_COMMAND {
+            return Ok(());
+        }
         // receive data
         no_eof(self.bus.read_exact(&mut self.receive[..size]).await)?;
         // try to process it
@@ -128,7 +133,9 @@ impl<B: Read + Write> SlaveControl<B> {
             self.send_header.access.set_error(true);
         }
         // transmit anyway
+//         debug!("transmit {:#?} checksum {}", self.send_header, checksum(&self.send_header.to_be_bytes()));
         let header = self.send_header.to_be_bytes();
+//         debug!("transmit bytes {:?}", &header);
         self.bus.write(&header).await?;
         self.bus.write(&checksum(&header).to_be_bytes()).await?;
         self.bus.write(&self.send[.. size]).await?;
@@ -138,11 +145,11 @@ impl<B: Read + Write> SlaveControl<B> {
     async fn catch_header(&mut self) -> Result<Command, B::Error> {
         const HEADER: usize = <Command as FromBytes>::Bytes::SIZE;
         // receive an amount that can be a header and its checksum
-        debug!("waiting header");
+//         debug!("waiting header");
         no_eof(self.bus.read_exact(&mut self.receive[.. HEADER+1]).await)?;
         // loop until checksum is good to catch up new command
         while checksum(&self.receive[.. HEADER+1]) != 0 {
-            debug!("catching up header");
+//             debug!("catching up header");
             self.receive[.. HEADER+1].rotate_left(1);
             no_eof(self.bus.read_exact(&mut self.receive[HEADER .. HEADER+1]).await)?;
         }
@@ -153,9 +160,6 @@ impl<B: Read + Write> SlaveControl<B> {
         let size = usize::from(recv_header.size);
         
         // check command consistency
-        if size > MAX_COMMAND {
-            return Err(registers::CommandError::InvalidAccess);
-        }
         if recv_header.access.fixed() && recv_header.access.topological() {
             return Err(registers::CommandError::InvalidCommand);
         }
@@ -168,7 +172,7 @@ impl<B: Read + Write> SlaveControl<B> {
         if recv_header.access.fixed() && recv_header.address.slave() == self.address
         || recv_header.access.topological() && recv_header.address.slave() == 0 
         {
-            debug!("access slave buffer");
+//             debug!("access slave buffer");
             // check data integrity, only useful if data was expected
             if recv_header.access.write() && recv_header.checksum != checksum(&self.receive[..size]) {
                 return Ok(());
@@ -180,7 +184,7 @@ impl<B: Read + Write> SlaveControl<B> {
         }
         // access to bus virtual memory
         else if !recv_header.access.fixed() && !recv_header.access.topological() {
-            debug!("access virtual memory");
+//             debug!("access virtual memory");
             // check data integrity, only useful if data was expected
             if recv_header.access.write() && recv_header.checksum != checksum(&self.receive[..size]) {
                 return Ok(());
@@ -193,7 +197,7 @@ impl<B: Read + Write> SlaveControl<B> {
         }
         // any other command
         else {
-            debug!("ignore command");
+//             debug!("ignore command");
             // simply pass data
             self.send[..size] .copy_from_slice(&self.receive[..size]);
             return Ok(());
@@ -209,6 +213,11 @@ impl<B: Read + Write> SlaveControl<B> {
         {
             // lock slave's buffer only once
             let mut buffer = slave.buffer.lock().await;
+            
+            if usize::from(register).saturating_add(size) > buffer.len() {
+                warn!("invalid size");
+                return Err(registers::CommandError::InvalidRegister);
+            }
             
             // read buffer before writing it
             if header.access.read() {
