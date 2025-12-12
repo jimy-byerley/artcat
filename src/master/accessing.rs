@@ -244,20 +244,24 @@ where
             })
     }
     /// check whether a answer has been received, and unpack the current value in the buffer whenever nothing has been received
-    pub async fn try_receive(&self) -> ArtcatResult<T>  {todo!()}
+    pub async fn get(&self) -> T  {
+        let mut buffer = T::Bytes::zeroed();
+        self.topic.get(&mut buffer.as_mut()).await;
+        T::from_be_bytes(buffer)
+    }
 }
 impl<'m, T,A> Stream<'m, T,A>
 where T: ToBytes
 {
-    /// send a write command with the given value
+    /// send a write command with the given value, this has not effect on the current value in the buffer
     pub async fn send_write(&self, value: T) -> Result<(), Error>  {
         self.topic.send(false, true, Some(value.to_be_bytes().as_ref())).await
     }
-    /// send a read command 
+    /// send a read command , this has not effect on the current value in the buffer
     pub async fn send_read(&self) -> Result<(), Error> {
         self.topic.send(true, false, Some(T::Bytes::zeroed().as_ref())).await
     }
-    /// send a read-then-write command writing the given value
+    /// send a read-then-write command writing the given value, this has not effect on the current value in the buffer
     pub async fn send_exchange(&self, value: T) -> Result<(), Error> {
         self.topic.send(true, true, Some(value.to_be_bytes().as_ref())).await
     }

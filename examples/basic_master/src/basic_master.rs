@@ -12,35 +12,35 @@ async fn main() {
 
     // initialize a master on some uart port
     println!("creating master");
-    // 115_200
-    // 1_000_000
-    // 1_500_000
-    // 2_000_000
     let master = Master::new("/dev/ttyUSB1", 1_500_000).unwrap();
     
     let task = async {
         println!("running task");
-        // read and write registers
         let slave = master.slave(Host::Topological(0));
+        // read standard registers
         let device = slave.read(registers::DEVICE).await.unwrap().any().unwrap();
         println!("standard device info: model: {}  soft: {}  hard: {}", 
                 device.model.as_str().unwrap(), 
                 device.software_version.as_str().unwrap(),
                 device.hardware_version.as_str().unwrap(),
                 );
-//         for i in 0 .. 10 {
-//             println!("specific counter register: {}, {:?}", i, slave.read(COUNTER).await.unwrap().any().unwrap());
-//             tokio::time::sleep(Duration::from_millis(100)).await;
-//         }
-        
+        // read non standard registers
+        for i in 0 .. 10 {
+            println!("specific counter register: {}, {:?}", i, slave.read(COUNTER).await.unwrap().any().unwrap());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // change address to fixed
         let address = 1;
         slave.write(registers::ADDRESS, address).await.unwrap();
+        
+        // read non standard registers with fixed address
         let slave = master.slave(Host::Fixed(address));
         for i in 0 .. 10 {
             println!("specific counter register: {}, {:?}", i, slave.read(COUNTER).await.unwrap().any().unwrap());
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
         
+        // create a mapping to gather many registers
         let mut mapping = Mapping::new();
         let buffer = mapping.buffer::<MyBuffer>().unwrap()
             .register(slave.address(), OFFSETED)
@@ -49,20 +49,21 @@ async fn main() {
         
         mapping.configure(&slave).await.unwrap();
         
-        let mut previous;
+        // stream our custom packet of data
+        let mut previous = MyBuffer::default();
         let mut current = MyBuffer::default();
         let stream = master.stream(buffer).await?;
         stream.send_exchange(current.clone()).await.unwrap();
         for i in 0 .. 10 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            (current, previous) = (stream.receive().await.unwrap().data, current);
+            tokio::time::sleep(Duration::from_millis(10)).await;
             stream.send_exchange(previous.clone()).await.unwrap();
+            (current, previous) = (stream.receive().await.unwrap().data, current);
             println!("{}:  offset {} offseted {}", 
                 i,
                 current.offset,
                 current.offseted,
                 );
-            current.offset = 2*i;
+            current.offset = (i%2)*100;
         }
         
         Ok::<(), artcat::master::Error>(())

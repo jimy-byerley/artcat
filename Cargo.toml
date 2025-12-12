@@ -13,8 +13,9 @@ serial2-tokio = { version="^0.1", optional = true }
 tokio = { version="^1.48", features = ['io-util'], optional = true }
 embedded-io-async = { version = "^0.7", optional = true }
 thiserror = { version="^2.0", optional = true }
+rand = { version = "^0.9", optional = true }
 
 [features]
 std = []
-master = ["std", "dep:serial2-tokio", "dep:tokio", "dep:thiserror"]
+master = ["std", "dep:serial2-tokio", "dep:tokio", "dep:thiserror", "dep:rand"]
 slave = ["dep:embedded-io-async"]

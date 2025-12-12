@@ -1,4 +1,3 @@
-use core::ops::BitXor;
 use bilge::prelude::*;
 use packbytes::{FromBytes, ToBytes};
 
@@ -58,5 +57,5 @@ pack_bilge!(Address);
 /// checksum method used for command header and data
 pub fn checksum(slice: &[u8]) -> u8 {
     let initial = 0b010110111; // standard neutral value of checksum
-    slice.iter().cloned().fold(initial, BitXor::bitxor)
+    slice.iter().cloned().fold(initial, |a, b|  a.wrapping_add(b)<<1)
 }

@@ -1,6 +1,6 @@
 use log::*;
 use packbytes::{FromBytes, ToBytes, ByteArray};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 // use tokio_serial::{SerialStream, SerialPort, DataBits, Parity, StopBits};
 use serial2_tokio::{SerialPort, CharSize, StopBits, Parity};
 use std::{
@@ -11,7 +11,7 @@ use std::{
     mem::transmute,
     vec::Vec,
     ops::{Deref, DerefMut},
-    time::{Duration, Instant},
+    time::Duration,
     };
 
 use crate::{
@@ -86,22 +86,16 @@ impl Master {
         loop {
             const HEADER: usize = <Command as FromBytes>::Bytes::SIZE;
             // receive an amount that can be a header and its checksum
-            debug!("waiting header");
             bus.read_exact(&mut receive[.. HEADER+1]).await?;
-            debug!("header bytes {:?} {} {}", &receive[.. HEADER], checksum(&receive[..HEADER]), receive[HEADER]);
             // loop until checksum is good to catch up new command
-            while checksum(&receive[.. HEADER+1]) != 0 {
-                debug!("catching up header");
+            while checksum(&receive[.. HEADER]) != receive[HEADER] {
                 receive[.. HEADER+1].rotate_left(1);
                 bus.read_exact(&mut receive[HEADER .. HEADER+1]).await?;
-                debug!("header bytes {:?}", &receive[.. HEADER]);
             }
             let header = Command::from_be_bytes(receive[.. HEADER].try_into().unwrap());
             
-            debug!("received header {:#?}", header);
             let data = &mut receive[.. usize::from(header.size)];
             bus.read_exact(data).await?;
-            debug!("processing");
             
             let mut pending = self.pending.lock().await;
             if let Some(buffer) = pending.get_mut(&header.token) {
@@ -157,8 +151,11 @@ impl<'m> Topic<'m> {
     pub async fn new(master: &'m Master, address: Address, mut buffer: PinnedBuffer<'m>) -> Result<Self, Error> {
         // reserve space in the master for the answer
         let mut pending = master.pending.lock().await;
+        // reserve a free token, preferably random to increase the chance of getting one that was not used by previus communication (useful at start) and to decrease the chance of good checksum for bad packet
+        let first = rand::random::<u16>();
         let token = loop {
-            if let Some(token) = (0 ..= u16::try_from(pending.len()).unwrap()) 
+            if let Some(token) = (0 ..= u16::try_from(pending.len()).unwrap())
+                .map(|i|  i.wrapping_add(first))
                 .filter(|k| ! pending.contains_key(&k))
                 .next()
                 {break token}
@@ -193,25 +190,20 @@ impl<'m> Topic<'m> {
         Ok(Self{master, token, buffer})
     }
     /// send the current content of the buffer
-    pub async fn send(&self, read: bool, write: bool, copy: Option<&[u8]>) -> Result<(), Error> {
+    pub async fn send(&self, read: bool, write: bool, data: Option<&[u8]>) -> Result<(), Error> {
         let mut pending = self.master.pending.lock().await;
         let buffer = pending.get_mut(&self.token).unwrap();
-        if let Some(src) = copy {
-            buffer.buffer.copy_from_slice(src);
-        }
+        let data = data.unwrap_or(buffer.buffer);
         // update command for new buffer
-        buffer.command.checksum = checksum(buffer.buffer);
-        buffer.command.executed = 0;
-        buffer.command.access.set_error(false);
+        buffer.command.checksum = checksum(data);
         buffer.command.access.set_read(read);
         buffer.command.access.set_write(write);
         {
             let bus = self.master.transmit.lock().await;
             let header = buffer.command.to_be_bytes();
-            debug!("send {:#?} {:?}", buffer.command, &header);
-            bus.write(&header).await?;
-            bus.write(&checksum(&header).to_be_bytes()).await?;
-            bus.write(buffer.buffer).await?;
+            bus.write_all(&header).await?;
+            bus.write_all(&checksum(&header).to_be_bytes()).await?;
+            bus.write_all(data).await?;
         }
         Ok(())
     }
@@ -234,6 +226,12 @@ impl<'m> Topic<'m> {
         });
         tokio::time::timeout(self.master.timeout, polling).await
             .map_err(|_| Error::Timeout)?
+    }
+    /// copy the current data in the buffer, received or not, already read or not
+    pub async fn get(&self, dst: &mut [u8]) {
+        let pending = self.master.pending.lock().await;
+        let buffer = pending.get(&self.token).unwrap();
+        dst.copy_from_slice(buffer.buffer);
     }
 }
 impl Drop for Topic<'_> {
