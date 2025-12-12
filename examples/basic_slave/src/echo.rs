@@ -10,7 +10,7 @@ use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
     timer::timg::TimerGroup,
-    uart::{DataBits, Parity, StopBits},
+    uart::{DataBits, Parity, StopBits, RxConfig},
 };
 use embassy_executor::Spawner;
 use esp_println as _;
@@ -34,10 +34,11 @@ async fn main(_spawner: Spawner) {
     // initialize slave
     info!("setting up slave");
     let config = esp_hal::uart::Config::default()
-        .with_baudrate(1_500_000)  // same for 115_200
+        .with_baudrate(1_500_000)
         .with_data_bits(DataBits::_8)
         .with_stop_bits(StopBits::_1)
         .with_parity(Parity::Even)
+        .with_rx(RxConfig::default() .with_fifo_full_threshold(1))
         ;
     let mut bus = esp_hal::uart::Uart::new(peripherals.UART1, config).unwrap()
         .with_rx(peripherals.GPIO16)
@@ -45,12 +46,20 @@ async fn main(_spawner: Spawner) {
         .into_async();
     
     info!("start echoing");
-    let mut buffer = [0; 129];  // works with 128, but not after
     loop {
+        let mut buffer = [0; 150];  // works with 128, but not after
+//         debug!("waiting");
         if let Err(err) = bus.read_exact_async(&mut buffer).await {
             debug!("read error: {:?}", err);
+//             while bus.read_async(&mut buffer).await.is_ok() {}
+//             debug!("flushed");
             continue
         }
-        bus.write_async(&buffer).await.unwrap();
+        let mut remain = &buffer[..];
+        while !remain.is_empty() {
+            let sent = bus.write_async(remain).await.unwrap();
+            remain = &remain[sent ..];
+        }
+        debug!("read: {:?} -- {}", &buffer, buffer.len());
     }
 }

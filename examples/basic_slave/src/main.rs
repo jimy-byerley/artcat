@@ -10,7 +10,7 @@ use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
     timer::timg::TimerGroup,
-    uart::{DataBits, Parity, StopBits},
+    uart::{DataBits, Parity, StopBits, RxConfig},
 };
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
@@ -62,6 +62,7 @@ async fn main(_spawner: Spawner) {
         .with_data_bits(DataBits::_8)
         .with_stop_bits(StopBits::_1)
         .with_parity(Parity::Even)
+        .with_rx(RxConfig::default() .with_fifo_full_threshold(1))
         ;
     debug!("clock source {:?}", config.clock_source());
     let bus = esp_hal::uart::Uart::new(peripherals.UART1, config).unwrap()
@@ -83,7 +84,7 @@ async fn main(_spawner: Spawner) {
             let count = buffer.get(COUNTER);
             let offset = buffer.get(OFFSET);
             buffer.set(COUNTER, count + 1);
-            buffer.set(OFFSETED, count + u32::from(offset));
+            buffer.set(OFFSETED, count + 1 + u32::from(offset));
         }
     };
     // run application-specific task and slave concurrently

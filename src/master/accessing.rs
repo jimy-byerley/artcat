@@ -235,7 +235,14 @@ where
     pub fn register(&self) -> Register<T,A>  {self.register.clone()}
     
     /// wait for a answer to be received, and unpack the received value
-    pub async fn receive(&self) -> ArtcatResult<T>  {todo!()}
+    pub async fn receive(&self) -> ArtcatResult<T>  {
+        let mut buffer = T::Bytes::zeroed();
+        let executed = self.topic.receive(Some(&mut buffer.as_mut())).await?;
+        Ok(Answer{
+            data: T::from_be_bytes(buffer),
+            executed,
+            })
+    }
     /// check whether a answer has been received, and unpack the current value in the buffer whenever nothing has been received
     pub async fn try_receive(&self) -> ArtcatResult<T>  {todo!()}
 }
@@ -244,11 +251,11 @@ where T: ToBytes
 {
     /// send a write command with the given value
     pub async fn send_write(&self, value: T) -> Result<(), Error>  {
-        self.topic.send(true, false, Some(value.to_be_bytes().as_ref())).await
+        self.topic.send(false, true, Some(value.to_be_bytes().as_ref())).await
     }
     /// send a read command 
     pub async fn send_read(&self) -> Result<(), Error> {
-        self.topic.send(false, true, Some(T::Bytes::zeroed().as_ref())).await
+        self.topic.send(true, false, Some(T::Bytes::zeroed().as_ref())).await
     }
     /// send a read-then-write command writing the given value
     pub async fn send_exchange(&self, value: T) -> Result<(), Error> {

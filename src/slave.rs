@@ -136,20 +136,20 @@ impl<B: Read + Write> SlaveControl<B> {
 //         debug!("transmit {:#?} checksum {}", self.send_header, checksum(&self.send_header.to_be_bytes()));
         let header = self.send_header.to_be_bytes();
 //         debug!("transmit bytes {:?}", &header);
-        self.bus.write(&header).await?;
-        self.bus.write(&checksum(&header).to_be_bytes()).await?;
-        self.bus.write(&self.send[.. size]).await?;
+        write(&mut self.bus, &header).await?;
+        write(&mut self.bus, &checksum(&header).to_be_bytes()).await?;
+        write(&mut self.bus, &self.send[.. size]).await?;
         Ok(())
     }
     /// wait until a command header is found
     async fn catch_header(&mut self) -> Result<Command, B::Error> {
         const HEADER: usize = <Command as FromBytes>::Bytes::SIZE;
         // receive an amount that can be a header and its checksum
-//         debug!("waiting header");
+        debug!("waiting header");
         no_eof(self.bus.read_exact(&mut self.receive[.. HEADER+1]).await)?;
         // loop until checksum is good to catch up new command
         while checksum(&self.receive[.. HEADER+1]) != 0 {
-//             debug!("catching up header");
+            debug!("catching up header");
             self.receive[.. HEADER+1].rotate_left(1);
             no_eof(self.bus.read_exact(&mut self.receive[HEADER .. HEADER+1]).await)?;
         }
@@ -172,7 +172,7 @@ impl<B: Read + Write> SlaveControl<B> {
         if recv_header.access.fixed() && recv_header.address.slave() == self.address
         || recv_header.access.topological() && recv_header.address.slave() == 0 
         {
-//             debug!("access slave buffer");
+            debug!("access slave buffer");
             // check data integrity, only useful if data was expected
             if recv_header.access.write() && recv_header.checksum != checksum(&self.receive[..size]) {
                 return Ok(());
@@ -184,20 +184,22 @@ impl<B: Read + Write> SlaveControl<B> {
         }
         // access to bus virtual memory
         else if !recv_header.access.fixed() && !recv_header.access.topological() {
-//             debug!("access virtual memory");
+            debug!("access virtual memory");
             // check data integrity, only useful if data was expected
             if recv_header.access.write() && recv_header.checksum != checksum(&self.receive[..size]) {
+                debug!("data corrupted");
                 return Ok(());
             }
             // exchange data according to local mapping
             // mark the command executed
             self.send_header.executed += 1;
             self.exchange_virtual(slave, recv_header).await;
+            debug!("done");
             return Ok(());
         }
         // any other command
         else {
-//             debug!("ignore command");
+            debug!("ignore command");
             // simply pass data
             self.send[..size] .copy_from_slice(&self.receive[..size]);
             return Ok(());
@@ -239,11 +241,16 @@ impl<B: Read + Write> SlaveControl<B> {
     async fn exchange_virtual<const MEM: usize>(&mut self, slave: &Slave<B, MEM>, header: Command) {
         // get concerned mapping
         let size = usize::from(header.size);
-        let start = bisect_slice(&self.mapping, |item| item.virtual_start <= u32::from(header.address));
-        let stop = bisect_slice(&self.mapping[start ..], |item| item.virtual_start <= u32::from(header.address) + u32::from(header.size));
+        debug!("bisecting {:?}   {} - {}", &self.mapping, u32::from(header.address), u32::from(header.address)+u32::from(header.size));
+        // lower bound os the first that ends in the requested area
+        let start = bisect_slice(&self.mapping, |item| item.virtual_start + u32::from(item.size) > u32::from(header.address));
+        // upper bound is the first that starts after requested area
+        let stop = bisect_slice(&self.mapping[start ..], |item| item.virtual_start > u32::from(header.address) + u32::from(header.size));
         
         // transmit all unless altered by mapping
         self.send[..size] .copy_from_slice(&self.receive[..size]);
+        
+        debug!(" virtual range {} - {}   {:?}", start, stop, &self.mapping[start .. stop]);
         
         // only lock if concerned by this frame (frames not concerning this slave at all will never lock the slave task)
         if stop > start {
@@ -254,6 +261,7 @@ impl<B: Read + Write> SlaveControl<B> {
             if header.access.read() {
                 for &mapped in &self.mapping[start .. stop] {
                     if let Some((dst, src)) = map_frame_slave(mapped, header) {
+                        debug!("reading {:?}", src);
                         self.send[dst].copy_from_slice(&buffer[src]);
                     }
                 }
@@ -262,6 +270,7 @@ impl<B: Read + Write> SlaveControl<B> {
             if header.access.write() {
                 for &mapped in &self.mapping[start .. stop] {
                     if let Some((src, dst)) = map_frame_slave(mapped, header) {
+                        debug!("writing {:?}", dst);
                         buffer[dst].copy_from_slice(&self.receive[src]);
                     }
                 }
@@ -299,6 +308,21 @@ impl<B: Read + Write> SlaveControl<B> {
     }
 }
 
+
+async fn write<B: Write>(bus: &mut B, mut data: &[u8]) -> Result<(), B::Error> {
+    while ! data.is_empty() {
+        let sent = bus.write(data).await?;
+        data = &data[sent ..];
+    }
+    Ok(())
+}
+async fn read<B: Read>(bus: &mut B, mut data: &mut [u8]) -> Result<(), B::Error> {
+    while ! data.is_empty() {
+        let received = bus.read(data).await?;
+        data = &mut data[received ..];
+    }
+    Ok(())
+}
 /// simple helper unwrapping eof because they should not appear in bare metal uart, at least in esp32 hal
 fn no_eof<T, E>(result: Result<T, ReadExactError<E>>) -> Result<T, E> {
     result.map_err(|e| match e {
@@ -306,19 +330,19 @@ fn no_eof<T, E>(result: Result<T, ReadExactError<E>>) -> Result<T, E> {
         ReadExactError::Other(io) => io,
         })
 }
-/// bisect a slice to find the first index at which `threshold(slice[i])` is True
+/// bisect a slice to find the first `i` at which `threshold(slice[i])` is True
 fn bisect_slice<T>(slice: &[T], threshold: impl Fn(&T) -> bool) -> usize {
     let (mut start, mut end) = (0, slice.len());
-    while end > start {
-        let mid = start/2 + end/2;
+    while start < end {
+        let mid = (start + end)/2;
         if threshold(&slice[mid]) {
-            start = mid;
-        }
-        else {
             end = mid;
         }
+        else {
+            start = mid+1;
+        }
     }
-    start
+    end
 }
 /** 
     return matching ranges in frame data buffer and slave buffer according to the given mapping
