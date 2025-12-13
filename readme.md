@@ -37,6 +37,11 @@ also differences due to UART instead of Ethernet:
 
 ### running tests
 
+hardware config
+
+- the UART0 interface of esp32 is on `/dev/ttyUSB0`
+- the UART1 interface of esp32 is connected to your PC via a serial to USB converter on `/dev/ttyUSB1`
+
 in one shell run the testing slave
 
 ```shell
