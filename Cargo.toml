@@ -1,6 +1,6 @@
 [package]
 name = "uartcat"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Jimy Byerley <jimy.byerley@gmail.com>"]
 description = "chained uart memory bus protocol strongly inspired from EtherCAT and simplified "

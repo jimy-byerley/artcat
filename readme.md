@@ -9,7 +9,7 @@ The main advantages of this protocol are
 - no need for specific hardware for the protocol, any microcontroller has at least one UART
 
 [![crate](https://img.shields.io/crates/v/uartcat.svg)](https://crates.io/crates/uartcat)
-[![doc](https://img.shields.io/docsrs/uartcat)]()
+[![doc](https://img.shields.io/docsrs/uartcat)](https://docs.rs/uartcat/0.1.0/uartcat/)
 [![ci](https://github.com/jimy-byerley/artcat/actions/workflows/ci.yml/badge.svg)](https://github.com/jimy-byerley/artcat/actions/workflows/ci.yml)
 
 ## differences with EtherCAT
