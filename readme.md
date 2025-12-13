@@ -8,6 +8,8 @@ The main advantages of this protocol are
 - light weight
 - no need for specific hardware for the protocol, any microcontroller has at least one UART
 
+[![Rust](https://github.com/jimy-byerley/artcat/actions/workflows/rust.yml/badge.svg)](https://github.com/jimy-byerley/artcat/actions/workflows/rust.yml)
+
 ## differences with EtherCAT
 
 - no more communication state machine (INIT, PREOP, SAFE-OP, OP) all features are working all the time
