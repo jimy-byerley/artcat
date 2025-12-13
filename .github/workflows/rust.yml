@@ -1,0 +1,30 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: build master
+      run: cargo build --verbose --features master
+    - name: build slave
+      run: cargo build --verbose --features slave
+    - name: build master suite
+      run: |
+        cd master
+        cargo build --all-targets
+    - name: build slave suite
+      run: |
+        cd slave
+        cargo build --all-targets
