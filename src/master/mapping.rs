@@ -48,7 +48,7 @@ impl Mapping {
                 mapping.map[i] = *item;
             }
         }
-        slave.write(registers::MAPPING, mapping).await?.once()
+        slave.write(registers::MAPPING, mapping).await?.one()
     }
 }
 

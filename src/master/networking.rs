@@ -1,4 +1,3 @@
-use log::*;
 use packbytes::{FromBytes, ToBytes, ByteArray};
 use tokio::io::AsyncReadExt;
 // use tokio_serial::{SerialStream, SerialPort, DataBits, Parity, StopBits};

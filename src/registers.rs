@@ -91,7 +91,7 @@ pub struct MappingTable {
     pub map: [Mapping; 128],
 }
 /// setting for mapping a range of memory between slave and virtual memory
-#[derive(Copy, Clone, Default, FromBytes, ToBytes, Debug)]
+#[derive(Copy, Clone, Default, FromBytes, ToBytes, Debug, PartialEq)]
 pub struct Mapping {
     pub virtual_start: u32,
     pub slave_start: u16,

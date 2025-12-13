@@ -9,7 +9,8 @@ use uartcat::{
 
 #[tokio::main]
 async fn main() {
-    pretty_env_logger::init();
+//     pretty_env_logger::init();
+    env_logger::init();
 
     // initialize a master on some uart port
     println!("creating master");

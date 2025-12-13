@@ -35,7 +35,7 @@ impl<T> Answer<T> {
         Ok(self.data)
     }
     /// ok if the command was executed by by one slave only
-    pub fn once(self) -> Result<T, Error>  {
+    pub fn one(self) -> Result<T, Error>  {
         self.exact(1)
     }
 }

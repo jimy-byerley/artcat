@@ -83,6 +83,7 @@ const CUSTOM_REGISTER: SlaveRegister<u32> = Register::new(0x500);
 
 let master = Master::new("/dev/ttyUSB1", 1_500_000).unwrap();
 let custom = master.read(CUSTOM_REGISTER).await?.any()?;
+master.write(CUSTOM_REGISTER, custom+1).await?.any()?;
 
 assert_eq!(custom, 42);
 ```
