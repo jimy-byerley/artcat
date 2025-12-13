@@ -1,15 +1,7 @@
 [package]
-name = "basic_slave"
+name = "slave-suite"
 version = "0.1.0"
 edition = "2024"
-
-[[bin]]
-name = "slave"
-path = "src/main.rs"
-
-[[bin]]
-name = "echo"
-path = "src/echo.rs"
 
 [dependencies]
 log = "0.4"
@@ -27,7 +19,7 @@ embassy-executor = "0.9"
 embassy-time = "0.5"
 embassy-futures = "0.1"
 
-artcat = { version = "0.1", features = ["slave"], path = "../.." }
+uartcat = { version = "0.1", features = ["slave"], path = ".." }
 
 
 [profile.dev]

@@ -18,7 +18,7 @@ use embassy_futures::join::join;
 use esp_println as _;
 use log::*;
 
-use artcat::{
+use uartcat::{
     registers::{Register, SlaveRegister, Device},
     slave::*,
     };
