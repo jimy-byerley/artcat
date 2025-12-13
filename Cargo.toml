@@ -1,6 +1,6 @@
 [package]
 name = "uartcat"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 authors = ["Jimy Byerley <jimy.byerley@gmail.com>"]
 description = "chained uart memory bus protocol strongly inspired from EtherCAT and simplified "
@@ -26,3 +26,7 @@ rand = { version = "^0.9", optional = true }
 std = []
 master = ["std", "dep:serial2-tokio", "dep:tokio", "dep:thiserror", "dep:rand"]
 slave = ["dep:embedded-io-async"]
+
+# build docs for all features
+[package.metadata.docs.rs]
+all-features = true
