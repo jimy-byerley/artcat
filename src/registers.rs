@@ -64,7 +64,7 @@ pub const VERSION: SlaveRegister<u8> = Register::new(0x5);
 /// slave standard informations
 pub const DEVICE: SlaveRegister<Device> = Register::new(0x20);
 /// slave clock value when reading
-pub const CLOCK: SlaveRegister<u64> = Register::new(0x66);
+pub const CLOCK: SlaveRegister<u64> = Register::new(0x86);
 /// mapping between registers and virtual memory
 pub const MAPPING: SlaveRegister<MappingTable> = Register::new(0xff);
 
@@ -81,6 +81,8 @@ pub struct Device {
     pub hardware_version: StringArray,
     /// version of the slave's software
     pub software_version: StringArray,
+    /// serial number of this specific hardware item
+    pub serial: StringArray,
 }
 /// slave config for mapping between slave and virtual memory
 #[derive(Clone, FromBytes, ToBytes, Debug)]
@@ -142,16 +144,16 @@ pack_enum!(CommandError);
 /// register format for strings
 #[derive(Clone, Debug, Default, FromBytes, ToBytes)]
 pub struct StringArray {
-    pub size: u16,
-    pub buffer: [u8; 30],
+    pub size: u8,
+    pub buffer: [u8; 31],
 }
 impl TryFrom<&str> for StringArray {
     type Error = &'static str;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let value = value.as_bytes();
-        let size = u16::try_from(value.len()) .map_err(|_|  "input string exceeds maximum size")?;
+        let size = u8::try_from(value.len()) .map_err(|_|  "input string exceeds maximum size")?;
         let mut dst = Self {size, .. Default::default()};
-        if dst.buffer.len() >= 32
+        if value.len() > dst.buffer.len()
             {return Err("input string too long");}
         dst.buffer[..value.len()] .copy_from_slice(value);
         Ok(dst)

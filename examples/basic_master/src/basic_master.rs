@@ -19,10 +19,11 @@ async fn main() {
         let slave = master.slave(Host::Topological(0));
         // read standard registers
         let device = slave.read(registers::DEVICE).await.unwrap().any().unwrap();
-        println!("standard device info: model: {}  soft: {}  hard: {}", 
+        println!("standard device info: model: {}  soft: {}  hard: {}  serial: {}", 
                 device.model.as_str().unwrap(), 
                 device.software_version.as_str().unwrap(),
                 device.hardware_version.as_str().unwrap(),
+                device.serial.as_str().unwrap(),
                 );
         // read non standard registers
         for i in 0 .. 10 {

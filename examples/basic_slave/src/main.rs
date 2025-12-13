@@ -42,6 +42,7 @@ async fn main(_spawner: Spawner) {
     const COUNTER: SlaveRegister<u32> = Register::new(0x500);
     const OFFSET: SlaveRegister<u16> = Register::new(0x504);
     const OFFSETED: SlaveRegister<u32> = Register::new(0x512);
+    
     // initialize slave
     info!("setting up slave");
     let config = esp_hal::uart::Config::default()
@@ -56,6 +57,7 @@ async fn main(_spawner: Spawner) {
         .with_tx(peripherals.GPIO17)
         .into_async();
     let slave = Slave::<_, MEMORY>::new(bus, Device {
+        serial: "".try_into().unwrap(),
         model: "esp32-example".try_into().unwrap(),
         hardware_version: "0.1".try_into().unwrap(),
         software_version: "0.1".try_into().unwrap(),
@@ -67,10 +69,10 @@ async fn main(_spawner: Spawner) {
         loop {
             Timer::after(Duration::from_millis(10)).await;
             let mut buffer = slave.lock().await;
-            let count = buffer.get(COUNTER);
+            let count = buffer.get(COUNTER) + 1;
             let offset = buffer.get(OFFSET);
-            buffer.set(COUNTER, count + 1);
-            buffer.set(OFFSETED, count + 1 + u32::from(offset));
+            buffer.set(COUNTER, count);
+            buffer.set(OFFSETED, count + u32::from(offset));
         }
     };
     // run application-specific task and slave concurrently
