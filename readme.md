@@ -1,14 +1,16 @@
 # UartCAT
 
-UartCAT is a realtime memory bus protocol implemented on a UART daisy chain. Its concept are inspired from EtherCAT but with most of its complexity removed. UartCAT is a caterpillar propagating protocol using UART just like Ethercat is a caterpillar propagating protocol using Ethernet.
+UartCAT is a realtime memory bus protocol implemented on a [UART](https://en.wikipedia.org/wiki/Universal_asynchronous_receiver-transmitter) [daisy chain](https://en.wikipedia.org/wiki/Daisy_chain_\(electrical_engineering\)). Its concept are inspired from [EtherCAT](https://en.wikipedia.org/wiki/EtherCAT) but with most of its complexity removed. UartCAT is a caterpillar propagating protocol using UART just like Ethercat is a caterpillar propagating protocol using [Ethernet](https://en.wikipedia.org/wiki/Ethernet).
 
 The main advantages of this protocol are
 
-- fully open-source
+- fully [open-source](https://en.wikipedia.org/wiki/Open_source)
 - light weight
 - no need for specific hardware for the protocol, any microcontroller has at least one UART
 
-[![Rust](https://github.com/jimy-byerley/artcat/actions/workflows/rust.yml/badge.svg)](https://github.com/jimy-byerley/artcat/actions/workflows/rust.yml)
+[![crate](https://img.shields.io/crates/v/uartcat.svg)](https://crates.io/crates/uartcat)
+[![doc](https://img.shields.io/docsrs/uartcat)]()
+[![ci](https://github.com/jimy-byerley/artcat/actions/workflows/ci.yml/badge.svg)](https://github.com/jimy-byerley/artcat/actions/workflows/ci.yml)
 
 ## differences with EtherCAT
 
