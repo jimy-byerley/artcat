@@ -6,7 +6,7 @@ authors = ["Jimy Byerley <jimy.byerley@gmail.com>"]
 description = "chained uart memory bus protocol strongly inspired from EtherCAT and simplified "
 license = "MIT"
 categories = ["embedded", "asynchronous"]
-keywords = ["uart", "bus", "memory-bus", "serial", "async", "no-std"]
+keywords = ["uart", "realtime", "serial", "memory-bus", "async"]
 repository = "https://github.com/jimy-byerley/uartcat"
 
 [dependencies]
