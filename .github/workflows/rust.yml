@@ -24,7 +24,4 @@ jobs:
       run: |
         cd master
         cargo build --all-targets
-    - name: build slave suite
-      run: |
-        cd slave
-        cargo build --all-targets
+    # no build for slave toolchain because requires esp32 specific toolchain
