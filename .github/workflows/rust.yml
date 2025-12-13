@@ -17,9 +17,9 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: build master
-      run: cargo build --verbose --features master
+      run: cargo build --features master
     - name: build slave
-      run: cargo build --verbose --features slave
+      run: cargo build --features slave
     - name: build master suite
       run: |
         cd master
