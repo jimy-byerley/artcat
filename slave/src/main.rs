@@ -1,4 +1,4 @@
-/// slave program for unit tests run on master side
+//! slave program for unit tests run on master side
 
 #![no_std]
 #![no_main]

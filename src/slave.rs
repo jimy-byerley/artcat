@@ -40,6 +40,8 @@ struct SlaveControl<B> {
 impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
     /// initialize the slave on the given UART bus, with the given slave identification infos
     pub fn new(bus: B, device: registers::Device) -> Self {
+        assert!(MEM >= registers::USER, "buffer is too small for standard registers");
+    
         let mut buffer = SlaveBuffer {buffer: [0; MEM]};
         buffer.set(registers::VERSION, 1);
         buffer.set(registers::DEVICE, device);
