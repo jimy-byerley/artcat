@@ -1,5 +1,5 @@
 /*!
-    implement a asynchronous artcat slave in a ` no-std`  and ` no-alloc` environment.
+    implement a asynchronous uartcat slave in a ` no-std`  and ` no-alloc` environment.
 */
 use core::ops::{Deref, DerefMut, Range};
 use packbytes::{FromBytes, ToBytes, ByteArray};
@@ -14,7 +14,7 @@ use crate::{
 
 
 /**
-    artcat slave async implementation for bare-metal `no-std` and `no-alloc` environment
+    uartcat slave async implementation for bare-metal `no-std` and `no-alloc` environment
     
     A slave owns a local data buffer of `MEM` bytes, that is shared between bus coroutine and user task using a sync mutex.
     This buffer stores communication config of the slave as well as user data the slave wants to share with the master
@@ -68,7 +68,7 @@ impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
     pub fn try_lock(&self) -> Option<BusyMutexGuard<'_, SlaveBuffer<MEM>>> {self.buffer.try_lock()}
     
     /** 
-        coroutine reacting to artcat commands received on the bus. it is responsible of all communications with the master.
+        coroutine reacting to uartcat commands received on the bus. it is responsible of all communications with the master.
         
         It **must** run in order to communicate with the master
     */
@@ -78,7 +78,7 @@ impl<B: Read + Write, const MEM: usize> Slave<B, MEM> {
         loop {
 //             if control.receive_command(self).await.is_err() {
             if let Err(err) = control.receive_command(self).await {
-                warn!("artcat error {:?}", err);
+                warn!("uartcat error {:?}", err);
                 self.buffer.lock().await.add_loss();
             }
         }

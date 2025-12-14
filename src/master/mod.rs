@@ -1,5 +1,5 @@
 /*!
-    implement a asynchronous artcat master in `std` environment.
+    implement a asynchronous uartcat master in `std` environment.
     
     The central resource is the [Master] struct which implements all bus buffering and exchanges. 
     
@@ -34,7 +34,7 @@ use crate::{
     };
 use thiserror::Error;
 
-/// error regarding artcat communication
+/// error regarding uartcat communication
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("problem with uart bus")]

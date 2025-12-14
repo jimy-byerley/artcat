@@ -7,7 +7,7 @@ use super::{
     };
 
 
-type ArtcatResult<T> = Result<Answer<T>, Error>;
+type UartcatResult<T> = Result<Answer<T>, Error>;
 
 
 /// received data and number of slaves who executed the command
@@ -48,7 +48,7 @@ impl Master {
     pub async fn stream<T: FromBytes + ToBytes>(&self, buffer: VirtualRegister<T>) -> Result<Stream<'_, T>, Error> {
         Stream::<T, VirtualSize>::new(self, buffer).await
     }
-    pub async fn read<T: FromBytes>(&self, register: VirtualRegister<T>) -> ArtcatResult<T> {
+    pub async fn read<T: FromBytes>(&self, register: VirtualRegister<T>) -> UartcatResult<T> {
         let mut buffer = T::Bytes::zeroed();
         let executed = self.read_bytes(register.address(), buffer.as_mut()).await?.executed;
         Ok(Answer{
@@ -56,14 +56,14 @@ impl Master {
             executed,
             })
     }
-    pub async fn write<T: ToBytes>(&self, register: VirtualRegister<T>, value: T) -> ArtcatResult<()> {
+    pub async fn write<T: ToBytes>(&self, register: VirtualRegister<T>, value: T) -> UartcatResult<()> {
         let executed = self.write_bytes(register.address(), value.to_be_bytes().as_mut()).await?.executed;
         Ok(Answer{
             data: (),
             executed,
             })
     }
-    pub async fn exchange<C,T>(&self, register: VirtualRegister<T>, value: T) -> ArtcatResult<T> 
+    pub async fn exchange<C,T>(&self, register: VirtualRegister<T>, value: T) -> UartcatResult<T> 
     where 
         C: ByteArray, 
         T: ToBytes<Bytes=C> + FromBytes<Bytes=C> 
@@ -77,18 +77,18 @@ impl Master {
     }
     
     pub async fn stream_bytes(&self, _address: VirtualSize, _size: SlaveSize) -> StreamBytes<'_>   {todo!()}
-    pub async fn read_bytes<'d>(&self, address: VirtualSize, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+    pub async fn read_bytes<'d>(&self, address: VirtualSize, data: &'d mut [u8]) -> UartcatResult<&'d mut [u8]> {
         self.command(address, true, false, data).await
     }
-    pub async fn write_bytes(&self, address: VirtualSize, data: &mut [u8]) -> ArtcatResult<()> {
+    pub async fn write_bytes(&self, address: VirtualSize, data: &mut [u8]) -> UartcatResult<()> {
         self.command(address, false, true, data).await 
             .map(|a| Answer {data: (), executed: a.executed})
     }
-    pub async fn exchange_bytes<'d>(&self, address: VirtualSize, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+    pub async fn exchange_bytes<'d>(&self, address: VirtualSize, data: &'d mut [u8]) -> UartcatResult<&'d mut [u8]> {
         self.command(address, true, true, data).await
     }
     
-    async fn command<'d>(&self, address: VirtualSize, read: bool, write: bool, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+    async fn command<'d>(&self, address: VirtualSize, read: bool, write: bool, data: &'d mut [u8]) -> UartcatResult<&'d mut [u8]> {
         let executed = {
             let topic = Topic::new(
                 self, 
@@ -136,7 +136,7 @@ impl<'m> Slave<'m> {
     pub async fn stream<T: FromBytes + ToBytes>(&self, buffer: SlaveRegister<T>) -> Result<Stream<'m, T, SlaveSize>, Error> {
         Stream::<T, SlaveSize>::new(self.master, self.host, buffer).await
     }
-    pub async fn read<T: FromBytes>(&self, register: SlaveRegister<T>) -> ArtcatResult<T> {
+    pub async fn read<T: FromBytes>(&self, register: SlaveRegister<T>) -> UartcatResult<T> {
         let mut buffer = T::Bytes::zeroed();
         let executed = self.read_bytes(register.address(), buffer.as_mut()).await?.executed;
         Ok(Answer{
@@ -144,7 +144,7 @@ impl<'m> Slave<'m> {
             executed,
             })
     }
-    pub async fn write<T: ToBytes>(&self, register: SlaveRegister<T>, value: T) -> ArtcatResult<()> {
+    pub async fn write<T: ToBytes>(&self, register: SlaveRegister<T>, value: T) -> UartcatResult<()> {
         let executed = self.write_bytes(register.address(), value.to_be_bytes().as_mut()).await?.executed;
         Ok(Answer{
             data: (),
@@ -152,7 +152,7 @@ impl<'m> Slave<'m> {
             })
     }
     /// read-then-write the given register on current slave
-    pub async fn exchange<C: ByteArray, T: ToBytes<Bytes=C> + FromBytes<Bytes=C>>(&self, register: SlaveRegister<T>, value: T) -> ArtcatResult<T> {
+    pub async fn exchange<C: ByteArray, T: ToBytes<Bytes=C> + FromBytes<Bytes=C>>(&self, register: SlaveRegister<T>, value: T) -> UartcatResult<T> {
         let mut buffer = value.to_be_bytes();
         let executed = self.exchange_bytes(register.address(), buffer.as_mut()).await?.executed;
         Ok(Answer{
@@ -161,20 +161,20 @@ impl<'m> Slave<'m> {
             })
     }
     
-    pub async fn read_bytes<'d>(&self, address: SlaveSize, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+    pub async fn read_bytes<'d>(&self, address: SlaveSize, data: &'d mut [u8]) -> UartcatResult<&'d mut [u8]> {
         self.command(address, true, false, data).await
     }
-    pub async fn write_bytes(&self, address: SlaveSize, data: &mut [u8]) -> ArtcatResult<()> {
+    pub async fn write_bytes(&self, address: SlaveSize, data: &mut [u8]) -> UartcatResult<()> {
         self.command(address, false, true, data).await 
             .map(|a| Answer {data: (), executed: a.executed})
     }
-    pub async fn exchange_bytes<'d>(&self, address: SlaveSize, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+    pub async fn exchange_bytes<'d>(&self, address: SlaveSize, data: &'d mut [u8]) -> UartcatResult<&'d mut [u8]> {
         self.command(address, true, true, data).await
     }
     pub async fn stream_bytes(&self, _address: SlaveSize, _size: SlaveSize) -> StreamBytes<'m>   {todo!()}
     
     
-    async fn command<'d>(&self, address: SlaveSize, read: bool, write: bool, data: &'d mut [u8]) -> ArtcatResult<&'d mut [u8]> {
+    async fn command<'d>(&self, address: SlaveSize, read: bool, write: bool, data: &'d mut [u8]) -> UartcatResult<&'d mut [u8]> {
         let executed = {
             let topic = Topic::new(
                 self.master, 
@@ -235,7 +235,7 @@ where
     pub fn register(&self) -> Register<T,A>  {self.register.clone()}
     
     /// wait for a answer to be received, and unpack the received value
-    pub async fn receive(&self) -> ArtcatResult<T>  {
+    pub async fn receive(&self) -> UartcatResult<T>  {
         let mut buffer = T::Bytes::zeroed();
         let executed = self.topic.receive(Some(&mut buffer.as_mut())).await?;
         Ok(Answer{

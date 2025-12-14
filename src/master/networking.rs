@@ -24,7 +24,7 @@ use super::{Error, usize_to_message};
 
 
 /** 
-    artcat master async implementation
+    uartcat master async implementation
     
     all methods here are addressing the virtual memory which is shared by all slaves
 */
